@@ -1,8 +1,8 @@
 import os
 import sys
 import openpyxl
-import database
-import processing
+import backend.database as database
+import backend.processing as processing
 
 def test_backend_pipeline():
     print("=== STARTING BACKEND PIPELINE TEST ===")

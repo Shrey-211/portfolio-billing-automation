@@ -1,0 +1,233 @@
+@import "tailwindcss";
+
+:root {
+  --bg-background: #0d1017;
+  --bg-surface-lowest: #0b0e15;
+  --bg-surface-low: #191b23;
+  --bg-surface: #10131a;
+  --bg-surface-container: #1d2027;
+  --bg-surface-container-high: #272a32;
+  --bg-surface-container-highest: #32353d;
+  --text-on-surface: #e0e2ec;
+  --text-on-surface-variant: #c0c6d6;
+  
+  --border-outline: #8a919f;
+  --border-outline-variant: #404754;
+  
+  --primary-main: #77ACFF;
+  --primary-container: #9ec1ff;
+  --primary-fixed: #d6e3ff;
+  --text-on-primary: #002d68;
+  --text-on-primary-container: #002250;
+  
+  --secondary-main: #00c284;
+  --secondary-container: #00a570;
+  --text-on-secondary: #003823;
+  --text-on-secondary-container: #00311e;
+  
+  --error-main: #ff4a5a;
+  --error-container: #93000a;
+  
+  --ambient-glow-color: rgba(119, 172, 255, 0.12);
+  --ambient-glow-secondary-color: rgba(0, 194, 132, 0.05);
+  --glass-bg: linear-gradient(180deg, rgba(28, 35, 49, 0.4) 0%, rgba(16, 19, 26, 0.6) 100%);
+  --glass-border: rgba(35, 45, 63, 0.7);
+  --glass-shadow: rgba(255, 255, 255, 0.05);
+  --glass-drop-shadow: rgba(0, 0, 0, 0.3);
+
+  --glass-heavy-bg: linear-gradient(180deg, rgba(28, 35, 49, 0.6) 0%, rgba(16, 19, 26, 0.85) 100%);
+  --glass-heavy-border: rgba(35, 45, 63, 0.9);
+  --glass-heavy-shadow: rgba(255, 255, 255, 0.08);
+  
+  --scrollbar-thumb: #232d3f;
+  --scrollbar-hover: #32353d;
+}
+
+:root.light {
+  --bg-background: #f4f6fa;
+  --bg-surface-lowest: #ffffff;
+  --bg-surface-low: #f8fafc;
+  --bg-surface: #f1f5f9;
+  --bg-surface-container: #e2e8f0;
+  --bg-surface-container-high: #cbd5e1;
+  --bg-surface-container-highest: #94a3b8;
+  --text-on-surface: #0a0f1d;
+  --text-on-surface-variant: #1e293b;
+  
+  --border-outline: #64748b;
+  --border-outline-variant: #94a3b8;
+  
+  --primary-main: #0062c4;
+  --primary-container: #dceaff;
+  --primary-fixed: #77ACFF;
+  --text-on-primary: #ffffff;
+  --text-on-primary-container: #001e42;
+  
+  --secondary-main: #009664;
+  --secondary-container: #d1fae5;
+  --text-on-secondary: #ffffff;
+  --text-on-secondary-container: #003823;
+  
+  --error-main: #e11d48;
+  --error-container: #ffe4e6;
+  
+  --ambient-glow-color: rgba(119, 172, 255, 0.22);
+  --ambient-glow-secondary-color: rgba(244, 63, 94, 0.12);
+  --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.65) 0%, rgba(255, 255, 255, 0.4) 100%);
+  --glass-border: rgba(15, 23, 42, 0.12);
+  --glass-shadow: rgba(255, 255, 255, 0.5);
+  --glass-drop-shadow: rgba(148, 163, 184, 0.12);
+
+  --glass-heavy-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.8) 0%, rgba(255, 255, 255, 0.6) 100%);
+  --glass-heavy-border: rgba(15, 23, 42, 0.2);
+  --glass-heavy-shadow: rgba(255, 255, 255, 0.7);
+  
+  --scrollbar-thumb: #cbd5e1;
+  --scrollbar-hover: #94a3b8;
+}
+
+@theme {
+  --color-background: var(--bg-background);
+  --color-surface-lowest: var(--bg-surface-lowest);
+  --color-surface-low: var(--bg-surface-low);
+  --color-surface: var(--bg-surface);
+  --color-surface-container: var(--bg-surface-container);
+  --color-surface-container-high: var(--bg-surface-container-high);
+  --color-surface-container-highest: var(--bg-surface-container-highest);
+  --color-on-surface: var(--text-on-surface);
+  --color-on-surface-variant: var(--text-on-surface-variant);
+  
+  --color-outline: var(--border-outline);
+  --color-outline-variant: var(--border-outline-variant);
+  
+  --color-primary: var(--primary-main);
+  --color-primary-container: var(--primary-container);
+  --color-primary-fixed: var(--primary-fixed);
+  --color-on-primary: var(--text-on-primary);
+  --color-on-primary-container: var(--text-on-primary-container);
+  
+  --color-secondary: var(--secondary-main);
+  --color-secondary-container: var(--secondary-container);
+  --color-on-secondary: var(--text-on-secondary);
+  --color-on-secondary-container: var(--text-on-secondary-container);
+  
+  --color-error: var(--error-main);
+  --color-error-container: var(--error-container);
+}
+
+/* Global defaults using design system tokens */
+body {
+  background-color: var(--bg-background);
+  color: var(--text-on-surface);
+  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  antialiased: true;
+  overflow-x: hidden;
+  position: relative;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Angel One inspired glass panels */
+.glass-panel {
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-shadow), 0 8px 32px 0 var(--glass-drop-shadow);
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Glass table headers and side drawers */
+.glass-panel-heavy {
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  background: var(--glass-heavy-bg);
+  border: 1px solid var(--glass-heavy-border);
+  box-shadow: inset 0 1px 0 var(--glass-heavy-shadow), 0 12px 48px 0 var(--glass-drop-shadow);
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Ambient Fintech Backlighting */
+.ambient-glow {
+  position: absolute;
+  width: 800px;
+  height: 800px;
+  background: radial-gradient(circle, var(--ambient-glow-color) 0%, rgba(13, 16, 23, 0) 70%);
+  top: -200px;
+  left: 10%;
+  pointer-events: none;
+  z-index: 0;
+  transition: background 0.2s ease;
+}
+
+.ambient-glow-secondary {
+  position: absolute;
+  width: 800px;
+  height: 800px;
+  background: radial-gradient(circle, var(--ambient-glow-secondary-color) 0%, rgba(13, 16, 23, 0) 70%);
+  bottom: -200px;
+  right: 10%;
+  pointer-events: none;
+  z-index: 0;
+  transition: background 0.2s ease;
+}
+
+/* Custom premium scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+  transition: background 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-hover);
+}
+
+/* Premium animation presets */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes spinSlow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin-slow {
+  animation: spinSlow 12s linear infinite;
+}
+
+/* Custom placeholder styling to increase contrast in light mode */
+input::placeholder, 
+textarea::placeholder {
+  color: var(--text-on-surface-variant);
+  opacity: 0.65;
+}
+
+/* High contrast inputs and select widgets for light mode readability */
+:root.light input,
+:root.light select,
+:root.light textarea {
+  color: #05050a !important; /* Ensure input text is extremely dark and readable */
+}
+
+/* Ensure data tabular grid headers are clearly readable */
+:root.light th {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
+

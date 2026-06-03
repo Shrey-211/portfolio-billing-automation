@@ -1,88 +1,92 @@
 # Portfolio Billing Automation Desktop
 
-A locally installed desktop application built using Python and PySide6 (Qt) to automate the generation of portfolio reports, fee calculations, GST-compliant invoices, PDF documents, and client emailing.
+A modern, local desktop application built with a React frontend (Vite + Tailwind CSS), a Python FastAPI backend, and packaged within a native desktop window container via PyWebView. It automates portfolio report scanning, fee calculations, GST-compliant invoice generation, and email distribution.
 
 ---
 
 ## Technical Stack
-* **GUI Framework**: PySide6 (Qt)
-* **Excel Processor**: openpyxl
-* **PDF Generators**: win32com (Excel automation) & ReportLab (GST invoices & cross-platform fallbacks)
-* **Mail Integration**: smtplib (SMTP) & win32com (local Microsoft Outlook Application)
-* **Local Database**: SQLite
+* **Frontend**: React (Vite, Tailwind CSS, Lucide React Icons)
+* **API Server**: FastAPI, Uvicorn
+* **Native Frame**: PyWebView (native webview wrapper)
+* **Local Database**: SQLite (for billing history and client metadata registries)
+* **Excel cleansing**: openpyxl
+* **PDF Generators**: win32com (Excel COM automation) with a styled **ReportLab** tabular PDF fallback if Excel is not installed.
+* **Mail Dispatcher**: SMTP Mail Server or Microsoft Outlook client via COM automation.
 
 ---
 
-## Installation & Setup
+## Development Setup
 
-1. **Prerequisites**: Ensure Python 3.12+ is installed.
-2. **Create a Virtual Environment**:
-   ```powershell
-   python -m venv .venv
-   ```
-3. **Activate the Virtual Environment**:
-   * **Windows (PowerShell)**:
-     ```powershell
-     .venv/Scripts/Activate.ps1
-     ```
-   * **Windows (Command Prompt)**:
-     ```cmd
-     .venv\Scripts\activate.bat
-     ```
-   * **macOS / Linux**:
-     ```bash
-     source .venv/bin/activate
-     ```
-4. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-5. **Launch the Application**:
-   ```bash
-   python main.py
-   ```
+To run the application in development mode (with Hot Module Replacement for frontend code):
 
----
+### 1. Prerequisites
+Ensure Python 3.12+ and Node.js are installed on your machine.
 
-## Generating Test Portfolios
-To test the queue features out-of-the-box, run the mock generator script to build 3 sample client portfolios inside `test_data/`:
-```bash
-python test_data/generate_samples.py
-```
-
----
-
-## Packaging & Client Distribution
-
-PyInstaller is used to package the Python source files into a standalone application that does not require Python to be installed on the client machine.
-
-### Packaging for Windows (`.exe`)
-Run this build command on a **Windows** machine:
+### 2. Setup Backend Environment
+Create a virtual environment and install backend requirements:
 ```powershell
-# 1. Install pyinstaller inside your virtual environment
-pip install pyinstaller
+# Create venv
+python -m venv .venv
 
-# 2. Build the single-file executable
-pyinstaller --noconfirm --onefile --windowed --name="PortfolioInvoicing" main.py
+# Activate (Windows PowerShell)
+.venv/Scripts/Activate.ps1
+
+# Install requirements
+pip install -r requirements.txt
 ```
-* The packaged `.exe` will be generated inside the `dist/` directory.
 
-### Packaging for macOS (`.app`)
-Run this build command on a **macOS** machine:
+### 3. Setup Frontend Environment
+Install Node packages in the `frontend` folder:
 ```bash
-# 1. Install pyinstaller inside your virtual environment
-pip install pyinstaller
-
-# 2. Build the app bundle
-pyinstaller --noconfirm --onefile --windowed --name="PortfolioInvoicing" main.py
+cd frontend
+npm install
 ```
-* The packaged `.app` bundle will be generated inside the `dist/` directory.
+
+### 4. Run in Development Mode
+To develop, launch both the Vite server and the Python app with the `--dev` flag:
+
+* **Terminal 1 (Vite Dev Server)**:
+  ```bash
+  cd frontend
+  npm run dev
+  ```
+* **Terminal 2 (Python Dev Client)**:
+  ```powershell
+  # Activate venv first
+  .venv/Scripts/Activate.ps1
+  
+  # Run app with --dev flag (points webview to localhost:5173 and APIs to port 8000)
+  python main.py --dev
+  ```
 
 ---
 
-## macOS Cross-Platform Behavior
+## Production Packaging & Distribution
 
-The core codebase is compatible with macOS. If compiled and executed on a Mac:
-1. **Portfolio PDFs**: Since macOS does not support Windows COM APIs (`win32com`), the engine automatically falls back to parsing the Excel holdings tables and compiling a clean, styled PDF using **ReportLab**.
-2. **Invoicing**: GST tax calculations and tax invoice PDF rendering are fully cross-platform.
-3. **Emailing**: Local Outlook COM integration is bypassed, and the application will send emails via the direct **SMTP mail server** configured in settings.
+Before delivering to clients, compile the frontend static files and bundle everything into a single standalone `.exe` using PyInstaller.
+
+### 1. Compile the React Frontend
+Run Vite compilation in the `frontend` folder to output static assets inside `frontend/dist/`:
+```bash
+cd frontend
+npm run build
+cd ..
+```
+
+### 2. Package with PyInstaller
+Run the build command using the provided Spec file (which bundles the `frontend/dist/` files inside the executable and excludes heavy unused Qt libraries):
+```powershell
+# Build executable
+.venv/Scripts/pyinstaller PortfolioInvoicing.spec --noconfirm
+```
+* The standalone executable `PortfolioInvoicing.exe` will be generated inside the `dist/` folder.
+* Double-clicking `PortfolioInvoicing.exe` runs the complete app (FastAPI server + PyWebView GUI) without needing Python or Node.js on the client machine.
+
+---
+
+## cross-Platform & Fallback Behaviors
+
+If the application is compiled or run on non-Windows environments (like **macOS**):
+1. **win32com Fallback**: Since Excel COM automation is Windows-only, the engine automatically catches import errors and runs a **ReportLab holdings table parser** to render styled portfolio PDFs directly.
+2. **Outlook COM Fallback**: If Outlook is unavailable, the application falls back to sending reports directly through the direct **SMTP mail server** configured in settings.
+3. **App Packaging**: PyInstaller can compile a native `.app` bundle on macOS using `pyinstaller PortfolioInvoicing.spec --noconfirm`.
