@@ -129,63 +129,6 @@ export default function Home({ setTab, setQueue, setFolderPath, folderPath, queu
         </div>
       </div>
 
-      {/* Metrics Row - Precision Glass Fintech Bento Style */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        
-        {/* Metric 1: AUM */}
-        <div className="glass-panel rounded-xl p-6 flex flex-col relative overflow-hidden group hover:border-primary/50 transition-colors duration-300">
-          <div className="flex justify-between items-start mb-4">
-            <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Assets Under Management</p>
-            <TrendingUp className="h-4 w-4 text-primary opacity-60" />
-          </div>
-          <div className="flex items-baseline gap-2">
-            <h3 className="font-mono text-2xl font-extrabold text-on-surface tracking-tight">₹452.8 Cr</h3>
-            <span className="font-mono text-[11px] text-secondary font-bold flex items-center">
-              +4.2%
-            </span>
-          </div>
-          {/* Abstract Sparkline Overlay from Stitch Design */}
-          <div className="absolute bottom-0 left-0 w-full h-10 opacity-10 pointer-events-none bg-gradient-to-t from-primary/20 to-transparent" style={{ clipPath: "polygon(0 100%, 0 60%, 20% 70%, 40% 40%, 60% 80%, 80% 30%, 100% 50%, 100% 100%)" }}></div>
-        </div>
-
-        {/* Metric 2: Net Billing */}
-        <div className="glass-panel rounded-xl p-6 flex flex-col relative overflow-hidden group hover:border-primary/50 transition-colors duration-300">
-          <div className="flex justify-between items-start mb-4">
-            <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Net Billing (Q3)</p>
-            <Percent className="h-4 w-4 text-primary opacity-60" />
-          </div>
-          <h3 className="font-mono text-2xl font-extrabold text-on-surface tracking-tight">₹1.24 Cr</h3>
-          <div className="w-full bg-surface-variant h-1 rounded-full overflow-hidden mt-3">
-            <div className="bg-primary h-full w-[65%] rounded-full"></div>
-          </div>
-        </div>
-
-        {/* Metric 3: GST */}
-        <div className="glass-panel rounded-xl p-6 flex flex-col relative overflow-hidden group hover:border-primary/50 transition-colors duration-300">
-          <div className="flex justify-between items-start mb-4">
-            <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">GST Collected</p>
-            <CheckCircle className="h-4 w-4 text-secondary opacity-60" />
-          </div>
-          <h3 className="font-mono text-2xl font-extrabold text-on-surface tracking-tight">₹22.32 L</h3>
-          <div className="mt-2 flex items-center gap-1.5 text-secondary">
-            <div className="w-1.5 h-1.5 rounded-full bg-secondary animate-pulse"></div>
-            <span className="text-[10px] font-bold tracking-wide">Ready for remittance</span>
-          </div>
-        </div>
-
-        {/* Metric 4: Success Rate */}
-        <div className="glass-panel rounded-xl p-6 flex flex-col relative overflow-hidden group hover:border-primary/50 transition-colors duration-300">
-          <div className="flex justify-between items-start mb-4">
-            <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Success Rate</p>
-            <CheckCircle className="h-4 w-4 text-secondary opacity-60" />
-          </div>
-          <h3 className="font-mono text-2xl font-extrabold text-on-surface tracking-tight">{stats.successRate}%</h3>
-          <div className="mt-2 flex items-center gap-1 text-on-surface-variant">
-            <span className="text-[10px] font-bold tracking-wide uppercase">stable ({stats.totalBatches} runs)</span>
-          </div>
-        </div>
-
-      </div>
 
       {/* Main Ingest & History Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

@@ -12,7 +12,9 @@ import {
   AlertCircle,
   Calendar,
   Layers,
-  Edit3
+  Edit3,
+  ChevronUp,
+  ChevronDown
 } from 'lucide-react';
 
 export default function MasterSheet({ folderPath }) {
@@ -29,6 +31,19 @@ export default function MasterSheet({ folderPath }) {
   const [editingCell, setEditingCell] = useState(null); // { itemId, field }
   const [editCellValue, setEditCellValue] = useState('');
   const [cellLoading, setCellLoading] = useState(null); // itemId
+
+  // Sorting and ID range filtering states
+  const [minIdFilter, setMinIdFilter] = useState('');
+  const [maxIdFilter, setMaxIdFilter] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: 'id', direction: 'desc' });
+
+  const requestSort = (key) => {
+    let direction = 'asc';
+    if (sortConfig.key === key && sortConfig.direction === 'asc') {
+      direction = 'desc';
+    }
+    setSortConfig({ key, direction });
+  };
 
   useEffect(() => {
     fetchInvoices();
@@ -246,16 +261,69 @@ export default function MasterSheet({ folderPath }) {
 
   const filteredInvoices = invoices.filter(inv => {
     const matchSearch = inv.client_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        (inv.filename && inv.filename.toLowerCase().includes(searchQuery.toLowerCase()));
+                        (inv.filename && inv.filename.toLowerCase().includes(searchQuery.toLowerCase())) ||
+                        (inv.invoice_number && inv.invoice_number.toLowerCase().includes(searchQuery.toLowerCase()));
     
+    let matchStatus = true;
     if (statusFilter === 'paid') {
-      return matchSearch && inv.is_paid === 1;
+      matchStatus = inv.is_paid === 1;
+    } else if (statusFilter === 'unpaid') {
+      matchStatus = inv.is_paid !== 1;
     }
-    if (statusFilter === 'unpaid') {
-      return matchSearch && inv.is_paid !== 1;
+    
+    let matchIdRange = true;
+    if (minIdFilter) {
+      matchIdRange = matchIdRange && inv.id >= parseInt(minIdFilter, 10);
     }
-    return matchSearch;
+    if (maxIdFilter) {
+      matchIdRange = matchIdRange && inv.id <= parseInt(maxIdFilter, 10);
+    }
+    
+    return matchSearch && matchStatus && matchIdRange;
   });
+
+  const sortedInvoices = [...filteredInvoices].sort((a, b) => {
+    let aVal = a[sortConfig.key];
+    let bVal = b[sortConfig.key];
+    
+    if (aVal === null || aVal === undefined) aVal = '';
+    if (bVal === null || bVal === undefined) bVal = '';
+    
+    if (typeof aVal === 'string') {
+      aVal = aVal.toLowerCase();
+      bVal = bVal.toLowerCase();
+    }
+    
+    if (aVal < bVal) {
+      return sortConfig.direction === 'asc' ? -1 : 1;
+    }
+    if (aVal > bVal) {
+      return sortConfig.direction === 'asc' ? 1 : -1;
+    }
+    return 0;
+  });
+
+  const renderSortableHeader = (key, label, widthClass = '') => {
+    const isSorted = sortConfig.key === key;
+    return (
+      <th 
+        scope="col" 
+        onClick={() => requestSort(key)}
+        className={`py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider cursor-pointer hover:text-primary hover:bg-surface-container-high/20 transition-all select-none ${widthClass}`}
+      >
+        <div className="flex items-center gap-1.5">
+          <span>{label}</span>
+          <span className="opacity-60 flex-shrink-0">
+            {isSorted ? (
+              sortConfig.direction === 'asc' ? <ChevronUp className="h-3.5 w-3.5 text-primary" /> : <ChevronDown className="h-3.5 w-3.5 text-primary" />
+            ) : (
+              <span className="text-[8px] text-on-surface-variant/40">▲▼</span>
+            )}
+          </span>
+        </div>
+      </th>
+    );
+  };
 
   return (
     <div className="space-y-8 animate-fade-in relative z-10">
@@ -299,32 +367,56 @@ export default function MasterSheet({ folderPath }) {
       )}
 
       {/* Filters Toolbar */}
-      <div className="flex flex-col sm:flex-row gap-4 items-center justify-between bg-surface-container/25 border border-outline-variant/10 rounded-xl p-4 glass-panel">
-        <div className="relative w-full sm:max-w-xs">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search clients..."
-            className="w-full bg-surface-lowest border border-[#232d3f]/40 rounded-lg pl-9 pr-4 py-2 text-xs text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary transition-all"
-          />
-          <Search className="absolute left-3 top-2.5 h-4 w-4 text-on-surface-variant/50" />
-        </div>
+      <div className="flex flex-col gap-4 bg-surface-container/25 border border-outline-variant/10 rounded-xl p-5 glass-panel">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center">
+          {/* Search */}
+          <div className="relative lg:col-span-5 w-full">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search clients, filenames, or invoice numbers..."
+              className="w-full bg-surface-lowest border border-[#232d3f]/40 rounded-lg pl-9 pr-4 py-2.5 text-xs text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary transition-all font-sans"
+            />
+            <Search className="absolute left-3 top-3.5 h-4 w-4 text-on-surface-variant/50" />
+          </div>
 
-        <div className="flex gap-2 w-full sm:w-auto">
-          {['all', 'paid', 'unpaid'].map(status => (
-            <button
-              key={status}
-              onClick={() => setStatusFilter(status)}
-              className={`flex-1 sm:flex-initial px-4 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all border border-transparent cursor-pointer ${
-                statusFilter === status 
-                  ? 'bg-primary/10 text-primary border-primary/20' 
-                  : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/30'
-              }`}
-            >
-              {status}
-            </button>
-          ))}
+          {/* ID Range */}
+          <div className="flex items-center gap-2 lg:col-span-4 w-full">
+            <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider whitespace-nowrap">ID Range:</span>
+            <input
+              type="number"
+              value={minIdFilter}
+              onChange={(e) => setMinIdFilter(e.target.value)}
+              placeholder="Min ID"
+              className="w-full bg-surface-lowest border border-[#232d3f]/40 rounded-lg px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary transition-all font-mono"
+            />
+            <span className="text-on-surface-variant text-xs font-bold">-</span>
+            <input
+              type="number"
+              value={maxIdFilter}
+              onChange={(e) => setMaxIdFilter(e.target.value)}
+              placeholder="Max ID"
+              className="w-full bg-surface-lowest border border-[#232d3f]/40 rounded-lg px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary transition-all font-mono"
+            />
+          </div>
+
+          {/* Status Buttons */}
+          <div className="flex gap-2 lg:col-span-3 justify-end w-full">
+            {['all', 'paid', 'unpaid'].map(status => (
+              <button
+                key={status}
+                onClick={() => setStatusFilter(status)}
+                className={`flex-1 sm:flex-initial px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all border border-transparent cursor-pointer ${
+                  statusFilter === status 
+                    ? 'bg-primary/10 text-primary border-primary/20 shadow-sm' 
+                    : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high/30'
+                }`}
+              >
+                {status}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -338,24 +430,24 @@ export default function MasterSheet({ folderPath }) {
             </svg>
             <p className="text-xs text-on-surface-variant mt-3 font-medium">Loading ledger logs...</p>
           </div>
-        ) : filteredInvoices.length > 0 ? (
+        ) : sortedInvoices.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-surface-lowest/70 border-b border-[#232d3f]/40">
-                  <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider w-20 min-w-[80px]">Inv ID</th>
-                  <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider min-w-[240px]">Client Name</th>
-                  <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider min-w-[160px]">Valuation</th>
-                  <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider min-w-[140px]">Fee (INR)</th>
-                  <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider min-w-[140px]">Total + GST</th>
-                  <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider text-center min-w-[120px]">Billing</th>
-                  <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider min-w-[160px]">Email Dispatch</th>
-                  <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider text-center min-w-[160px]">Payment Status</th>
+                  {renderSortableHeader('id', 'Inv ID', 'w-20 min-w-[80px]')}
+                  {renderSortableHeader('client_name', 'Client Name', 'min-w-[240px]')}
+                  {renderSortableHeader('valuation', 'Valuation', 'min-w-[160px]')}
+                  {renderSortableHeader('fee_amount', 'Fee (INR)', 'min-w-[140px]')}
+                  {renderSortableHeader('total_amount', 'Total + GST', 'min-w-[140px]')}
+                  {renderSortableHeader('status', 'Billing', 'text-center min-w-[120px]')}
+                  {renderSortableHeader('email_status', 'Email Dispatch', 'min-w-[160px]')}
+                  {renderSortableHeader('is_paid', 'Payment Status', 'text-center min-w-[160px]')}
                   <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider text-center min-w-[180px]">Actions</th>
                 </tr>
               </thead>
               <tbody className="text-xs text-on-surface divide-y divide-[#232d3f]/20">
-                {filteredInvoices.map((inv) => {
+                {sortedInvoices.map((inv) => {
                   const hasCustomMsg = !!inv.custom_message;
                   return (
                     <tr key={inv.id} className="hover:bg-surface-container-highest/20 transition-colors">

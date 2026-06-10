@@ -262,19 +262,36 @@ def apply_ui_overrides_to_excel(excel_path, item):
                 if "invoice_no" in cols:
                     ws.cell(row=target_row, column=cols["invoice_no"]).value = item["invoice_number"]
                 
-                # Update tax formulas dynamically based on state to ensure Excel COM recalculation works
+                # Update taxable amount and tax formulas dynamically based on settings & state
                 from openpyxl.utils import get_column_letter
                 is_maharashtra = str(state_val).strip().lower() == "maharashtra"
+                
+                settings_db = database.get_all_settings()
+                formula_template = settings_db.get("taxable_amt_formula", "Value * Rate / 4")
+                cgst_pct = float(settings_db.get("gst_rate_cgst", "9.0"))
+                sgst_pct = float(settings_db.get("gst_rate_sgst", "9.0"))
+                igst_pct = float(settings_db.get("gst_rate_igst", "18.0"))
+                
+                # Write dynamic Taxable Amount formula
+                if "taxable_amt" in cols and "value" in cols and "fee_@" in cols:
+                    val_let = get_column_letter(cols["value"])
+                    rate_let = get_column_letter(cols["fee_@"])
+                    
+                    excel_formula = formula_template.replace("Value", f"{val_let}{target_row}").replace("Rate", f"{rate_let}{target_row}")
+                    if not excel_formula.startswith("="):
+                        excel_formula = "=" + excel_formula
+                    
+                    ws.cell(row=target_row, column=cols["taxable_amt"]).value = excel_formula
                 
                 if "taxable_amt" in cols:
                     tax_let = get_column_letter(cols["taxable_amt"])
                     
                     if "cgst" in cols:
-                        ws.cell(row=target_row, column=cols["cgst"]).value = f"={tax_let}{target_row}*9%" if is_maharashtra else 0
+                        ws.cell(row=target_row, column=cols["cgst"]).value = f"={tax_let}{target_row}*{cgst_pct}%" if is_maharashtra else 0
                     if "sgst" in cols:
-                        ws.cell(row=target_row, column=cols["sgst"]).value = f"={tax_let}{target_row}*9%" if is_maharashtra else 0
+                        ws.cell(row=target_row, column=cols["sgst"]).value = f"={tax_let}{target_row}*{sgst_pct}%" if is_maharashtra else 0
                     if "isgt" in cols:
-                        ws.cell(row=target_row, column=cols["isgt"]).value = 0 if is_maharashtra else f"={tax_let}{target_row}*18%"
+                        ws.cell(row=target_row, column=cols["isgt"]).value = 0 if is_maharashtra else f"={tax_let}{target_row}*{igst_pct}%"
                     
                     if "total_inv_amt" in cols:
                         cgst_let = get_column_letter(cols["cgst"]) if "cgst" in cols else ""

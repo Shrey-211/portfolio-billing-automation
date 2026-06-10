@@ -138,11 +138,15 @@ def init_db(db_path=None):
             "email_smtp_user": "",
             "email_smtp_pass": "",  # To be stored encrypted in real environments
             "email_subject_template": "Portfolio Performance Report & Invoice - {ClientName}",
-            "email_body_template": "Dear {ClientName},\n\nPlease find attached your Portfolio Performance Report and GST Invoice ({InvoiceNumber}) for the period.\n\nPortfolio Valuation: INR {Valuation:,.2f}\nTotal Fees (incl. GST): INR {TotalAmount:,.2f}\n\nBest Regards,\nAntigravity Wealth Management"
+            "email_body_template": "Dear {ClientName},\n\nPlease find attached your Portfolio Performance Report and GST Invoice ({InvoiceNumber}) for the period.\n\nPortfolio Valuation: INR {Valuation:,.2f}\nTotal Fees (incl. GST): INR {TotalAmount:,.2f}\n\nBest Regards,\nAntigravity Wealth Management",
+            "taxable_amt_formula": "Value * Rate / 4"
         }
         for key, val in default_settings.items():
             cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (key, val))
             
+    # Ensure taxable_amt_formula is present even if DB is already created
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('taxable_amt_formula', 'Value * Rate / 4')")
+
     # Populate Default Fee Rules if empty
     cursor.execute("SELECT COUNT(*) FROM fee_rules")
     if cursor.fetchone()[0] == 0:

@@ -359,6 +359,24 @@ export default function Settings() {
                   <option value="slab" className="bg-[#0b0e15]">Progressive Slab Rate</option>
                 </select>
               </div>
+
+              <div className="space-y-2 col-span-2">
+                <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider flex items-center gap-1">
+                  Active Fee Calculation Formula (Excel & Fallback)
+                  <Info className="h-3.5 w-3.5 text-on-surface-variant/70 cursor-help" title="Defines the taxable fee formula written to Excel. Use placeholders 'Value' (Valuation) and 'Rate' (Fee %)." />
+                </label>
+                <input
+                  type="text"
+                  name="taxable_amt_formula"
+                  value={settings.taxable_amt_formula || 'Value * Rate / 4'}
+                  onChange={handleSettingChange}
+                  className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface font-mono tracking-wider focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all"
+                  placeholder="Value * Rate / 4"
+                />
+                <span className="text-[9.5px] text-on-surface-variant leading-relaxed block mt-1">
+                  Supports standard operators (<code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>). Placeholders: <strong>Value</strong> (Valuation) and <strong>Rate</strong> (Fee %).
+                </span>
+              </div>
             </div>
 
             {/* Collapsible Legacy slabs for clean look */}
