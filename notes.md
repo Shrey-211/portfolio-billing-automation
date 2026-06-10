@@ -1,0 +1,1 @@
+1. look for the client in mastersheet and then look for its portfiolio in indivisual folder then send the portfolio as well during the pdf generation

@@ -145,6 +145,7 @@ export default function Workbench({ queue, setQueue, folderPath, setTab, importM
         throw new Error(await res.text() || "Failed to start batch processing");
       }
 
+      setQueue([]);
       setTab('processing');
     } catch (err) {
       alert("Billing Trigger Failed: " + err.message);
