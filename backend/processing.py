@@ -179,14 +179,16 @@ def calculate_gst(fee_amount, state, gst_rates):
         "is_maharashtra": is_maharashtra
     }
 
-def convert_excel_to_pdf_fallback(excel_path, pdf_path):
+def convert_excel_to_pdf_fallback(excel_path, pdf_path, sheet_name=None):
     """
     Fallback method to generate a clean tabular report PDF from the Excel file
     using ReportLab when Microsoft Excel is not installed/configured.
     """
     try:
         wb = openpyxl.load_workbook(excel_path, data_only=True)
-        if "Holdings" in wb.sheetnames:
+        if sheet_name and sheet_name in wb.sheetnames:
+            sheet = wb[sheet_name]
+        elif "Holdings" in wb.sheetnames:
             sheet = wb["Holdings"]
         else:
             sheet = wb.active
@@ -305,9 +307,13 @@ def convert_excel_to_pdf_fallback(excel_path, pdf_path):
                                 formatted = f"{f_val:,.2f}" if c_idx != 2 or not f_val.is_integer() else f"{int(f_val)}"
                                 style = table_cell_right_bold if is_last_row else table_cell_right
                                 row_items.append(Paragraph(formatted, style))
-                            except ValueError:
+                            except (ValueError, TypeError):
+                                if hasattr(val, "strftime"):
+                                    formatted = val.strftime('%d-%b-%Y')
+                                else:
+                                    formatted = str(val)
                                 style = bold_text if is_last_row else table_cell_style
-                                row_items.append(Paragraph(str(val), style))
+                                row_items.append(Paragraph(formatted, style))
                         else:
                             style = bold_text if is_last_row else table_cell_style
                             row_items.append(Paragraph(str(val), style))
@@ -335,7 +341,7 @@ def convert_excel_to_pdf_fallback(excel_path, pdf_path):
         print(f"Fallback portfolio PDF generation failed: {e}")
         raise e
 
-def convert_excel_to_pdf(excel_path, pdf_path):
+def convert_excel_to_pdf(excel_path, pdf_path, sheet_name=None):
     """
     Uses win32com to open the excel file and export to PDF.
     Must be run in main thread or call pythoncom.CoInitialize() first if inside QThread.
@@ -343,7 +349,7 @@ def convert_excel_to_pdf(excel_path, pdf_path):
     """
     if not EXCEL_AVAILABLE:
         print("win32com not available. Running ReportLab fallback for Portfolio PDF.")
-        return convert_excel_to_pdf_fallback(excel_path, pdf_path)
+        return convert_excel_to_pdf_fallback(excel_path, pdf_path, sheet_name)
         
     pythoncom.CoInitialize()
     excel = None
@@ -358,13 +364,24 @@ def convert_excel_to_pdf(excel_path, pdf_path):
         
         os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
         wb = excel.Workbooks.Open(abs_excel)
-        wb.ExportAsFixedFormat(0, abs_pdf)
+        if sheet_name and sheet_name in [s.Name for s in wb.Sheets]:
+            ws = wb.Sheets(sheet_name)
+            orig_visibility = ws.Visible
+            if orig_visibility != -1:  # -1 represents xlSheetVisible
+                ws.Visible = -1  # Temporarily make it visible
+            try:
+                ws.ExportAsFixedFormat(0, abs_pdf)
+            finally:
+                if orig_visibility != -1:
+                    ws.Visible = orig_visibility  # Restore original visibility
+        else:
+            wb.ExportAsFixedFormat(0, abs_pdf)
         wb.Close(False)
         return True
     except Exception as e:
         print(f"Excel COM PDF conversion failed: {e}. Attempting ReportLab fallback.")
         try:
-            return convert_excel_to_pdf_fallback(excel_path, pdf_path)
+            return convert_excel_to_pdf_fallback(excel_path, pdf_path, sheet_name)
         except Exception as fallback_err:
             print(f"Both Excel COM and ReportLab fallback failed: {fallback_err}")
             raise e
@@ -385,7 +402,8 @@ def generate_invoice_pdf(pdf_path, invoice_details, company_details):
     """
     Generates a beautiful, professional, GST-compliant invoice PDF using reportlab.
     invoice_details: dict containing invoice_number, date, client_name, client_address,
-                     client_gstin, valuation, fee_amount, cgst, sgst, igst, total_amount
+                     client_gstin, valuation, fee_amount, cgst, sgst, igst, total_amount,
+                     particulars, rate, period_start, period_end, etc.
     company_details: dict containing company_name, company_address, company_gstin,
                      company_bank_name, company_bank_account, company_bank_ifsc, company_bank_branch, etc.
     """
@@ -474,9 +492,10 @@ def generate_invoice_pdf(pdf_path, invoice_details, company_details):
     # --- HEADER SECTION ---
     # Two column header: Company details left, INVOICE title & metadata right
     company_p = Paragraph(
-        f"<b>{company_details.get('company_name', 'Company Name')}</b><br/>"
-        f"{company_details.get('company_address', 'Address')}<br/>"
-        f"GSTIN: {company_details.get('company_gstin', 'GSTIN')}<br/>"
+        f"<b>{company_details.get('company_name', 'Cedrus Consultants Pvt Ltd')}</b><br/>"
+        f"{company_details.get('company_division', 'Investment Advisory Division')}<br/>"
+        f"{company_details.get('company_address', '')}<br/>"
+        f"GSTIN: {company_details.get('company_gstin', '')} | PAN: {company_details.get('company_pan', '')}<br/>"
         f"Email: {company_details.get('company_email', '')} | Phone: {company_details.get('company_phone', '')}",
         normal_text
     )
@@ -528,22 +547,42 @@ def generate_invoice_pdf(pdf_path, invoice_details, company_details):
     story.append(Spacer(1, 20))
     
     # --- PARTICULARS TABLE ---
-    # Column Headers: Sr. No., Particulars, HSN/SAC, Taxable Value (INR)
-    hsn_sac = "997152"  # SAC code for Portfolio Management Services
+    hsn_sac = str(invoice_details.get("sac") or invoice_details.get("sac_code") or "997159")
     
-    particulars_p = Paragraph(
-        f"Portfolio Management & Advisory Fees<br/>"
-        f"<font size='8' color='#718096'>Calculated on Portfolio Valuation of INR {invoice_details.get('valuation', 0.0):,.2f}</font>",
-        table_cell_style
-    )
+    particulars_text = invoice_details.get("particulars") or "Portfolio Management & Advisory Fees"
+    # If valuation is present and not already in text, append it
+    if "valuation" in invoice_details and str(invoice_details["valuation"]) not in particulars_text and float(invoice_details.get("valuation", 0.0)) > 0:
+        particulars_text += f"<br/><font size='8' color='#718096'>Calculated on Portfolio Valuation of INR {invoice_details.get('valuation', 0.0):,.2f}</font>"
+        
+    particulars_p = Paragraph(particulars_text, table_cell_style)
     
-    cols = ["Sr.", "Description", "SAC", "Taxable Value (INR)"]
+    period_text = ""
+    if invoice_details.get("period_start") or invoice_details.get("period_end"):
+        p_start = invoice_details.get("period_start", "")
+        p_end = invoice_details.get("period_end", "")
+        if "00:00:00" in p_end:
+            p_end = p_end.replace("00:00:00", "").strip()
+        period_text = f"{p_start} to {p_end}" if p_start and p_end else (p_start or p_end)
+
+    rate_val = invoice_details.get("rate", 0.0)
+    if isinstance(rate_val, (int, float)):
+        if rate_val < 1.0 and rate_val > 0:
+            rate_text = f"{rate_val * 100:.4g}%"
+        elif rate_val >= 1.0:
+            rate_text = f"{rate_val:.4g}%"
+        else:
+            rate_text = "-"
+    else:
+        rate_text = str(rate_val)
+
+    cols = ["Description", "SAC Code", "Period", "Rate", "Amount (INR)"]
     row_data = [
         [Paragraph(f"<b>{c}</b>", table_header_style) for c in cols],
         [
-            Paragraph("1", table_cell_style),
             particulars_p,
             Paragraph(hsn_sac, table_cell_style),
+            Paragraph(period_text, table_cell_style),
+            Paragraph(rate_text, table_cell_right),
             Paragraph(f"{invoice_details.get('fee_amount', 0.0):,.2f}", table_cell_right)
         ]
     ]
@@ -553,40 +592,48 @@ def generate_invoice_pdf(pdf_path, invoice_details, company_details):
     sgst = invoice_details.get("sgst", 0.0)
     igst = invoice_details.get("igst", 0.0)
     
-    # If CGST/SGST exist
     if cgst > 0 or sgst > 0:
         row_data.append([
-            "", Paragraph("CGST @ 9%", table_cell_style), "",
+            Paragraph("CGST @ 9%", table_cell_style), "", "", "",
             Paragraph(f"{cgst:,.2f}", table_cell_right)
         ])
         row_data.append([
-            "", Paragraph("SGST @ 9%", table_cell_style), "",
+            Paragraph("SGST @ 9%", table_cell_style), "", "", "",
             Paragraph(f"{sgst:,.2f}", table_cell_right)
         ])
     else:
         row_data.append([
-            "", Paragraph("IGST @ 18%", table_cell_style), "",
+            Paragraph("IGST @ 18%", table_cell_style), "", "", "",
             Paragraph(f"{igst:,.2f}", table_cell_right)
         ])
         
     # Total row
     row_data.append([
-        "", Paragraph("<b>Total Invoice Value (INR)</b>", table_cell_style), "",
+        Paragraph("<b>Total Invoice Value (INR)</b>", table_cell_style), "", "", "",
         Paragraph(f"<b>{invoice_details.get('total_amount', 0.0):,.2f}</b>", table_cell_right_bold)
     ])
     
-    particulars_table = Table(row_data, colWidths=[30, 315, 60, 110])
-    particulars_table.setStyle(TableStyle([
+    particulars_table = Table(row_data, colWidths=[200, 60, 110, 50, 95])
+    
+    # Style logic depending on tax rows count
+    t_styles = [
         ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1a365d')),
         ('ALIGN', (0,0), (-1,0), 'LEFT'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('GRID', (0,0), (-1,-2), 0.5, colors.HexColor('#cbd5e0')),
         ('LINEBELOW', (0,-1), (-1,-1), 1.5, colors.HexColor('#1a365d')),
-        ('SPAN', (1,2), (2,2)),  # CGST/IGST cells span SAC column
-        ('SPAN', (1,3), (2,3)),  # SGST cells span SAC column
-        ('SPAN', (1,4), (2,4)) if (cgst > 0 or sgst > 0) else ('SPAN', (1,3), (2,3)),
         ('PADDING', (0,0), (-1,-1), 8),
-    ]))
+    ]
+    
+    if cgst > 0 or sgst > 0:
+        t_styles.append(('SPAN', (0,2), (3,2)))
+        t_styles.append(('SPAN', (0,3), (3,3)))
+        t_styles.append(('SPAN', (0,4), (3,4)))
+    else:
+        t_styles.append(('SPAN', (0,2), (3,2)))
+        t_styles.append(('SPAN', (0,3), (3,3)))
+        
+    particulars_table.setStyle(TableStyle(t_styles))
     
     story.append(particulars_table)
     story.append(Spacer(1, 30))
@@ -594,17 +641,19 @@ def generate_invoice_pdf(pdf_path, invoice_details, company_details):
     # --- FOOTER SECTION (Bank Details & Signature) ---
     bank_p = Paragraph(
         f"<b>Bank Account Details for Payment:</b><br/>"
-        f"Account Name: {company_details.get('company_name', '')}<br/>"
+        f"Account Name: {company_details.get('company_bank_account_name') or company_details.get('company_name', '')}<br/>"
         f"Bank Name: {company_details.get('company_bank_name', '')}<br/>"
         f"Account No: {company_details.get('company_bank_account', '')}<br/>"
         f"IFSC Code: {company_details.get('company_bank_ifsc', '')}<br/>"
-        f"Branch: {company_details.get('company_bank_branch', '')}",
+        f"Branch: {company_details.get('company_bank_branch', '')}<br/>"
+        f"Account Type: {company_details.get('company_bank_account_type', 'Current Account')}",
         normal_text
     )
     
     sign_p = Paragraph(
         f"For <b>{company_details.get('company_name', 'Company Name')}</b><br/><br/><br/><br/>"
-        f"Authorized Signatory",
+        f"<b>{company_details.get('authorized_signatory', 'Nlesh Bajaj')}</b><br/>"
+        f"{company_details.get('authorized_signatory_title', 'Authorized Signatory')}",
         ParagraphStyle('Sign', parent=normal_text, alignment=2) # Right align
     )
     
@@ -617,6 +666,343 @@ def generate_invoice_pdf(pdf_path, invoice_details, company_details):
     # Wrap in KeepTogether to ensure it doesn't break across pages
     story.append(KeepTogether(footer_table))
     
+    # disputes disclaimer
+    story.append(Spacer(1, 15))
+    story.append(Paragraph("<font size='7' color='#718096'>All disputes restricted to Pune Jurisdiction</font>", normal_text))
+    
     # Build Document
     doc.build(story)
     return True
+
+def clean_label_val(val, prefix):
+    if not val:
+        return ""
+    val_str = str(val).strip()
+    import re
+    # Remove prefix case insensitively
+    pattern = re.compile(re.escape(prefix), re.IGNORECASE)
+    cleaned = pattern.sub("", val_str).strip()
+    # Remove leading colons or hyphens
+    cleaned = re.sub(r'^[:\-\s]+', '', cleaned).strip()
+    return cleaned
+
+def get_best_sheet_match(client_name, sheet_names):
+    import re
+    import difflib
+    c_clean = re.sub(r'[^a-zA-Z0-9\s]', '', client_name).lower().strip()
+    c_words = [w for w in c_clean.split() if w not in ('huf', 'and', 'trust', 'pvt', 'ltd', 'private', 'limited')]
+    if not c_words:
+        return None
+    
+    best_match = None
+    max_score = 0
+    
+    for sname in sheet_names:
+        sname_lower = sname.lower().strip()
+        if sname_lower in ('master file', 'sheet1', 'invoice', 'invoice making mircro', 'new latest', 'sheet2'):
+            continue
+        
+        s_clean = re.sub(r'[^a-zA-Z0-9\s]', '', sname_lower)
+        # remove leading numbers or codes
+        s_clean = re.sub(r'^\d+\s+', '', s_clean).strip()
+        s_clean = re.sub(r'^va\d*\s+', '', s_clean).strip()
+        
+        s_words = [w for w in s_clean.split() if w not in ('huf', 'and', 'trust', 'pvt', 'ltd', 'private', 'limited')]
+        if not s_words:
+            continue
+            
+        # Ensure first name matches closely with at least one word in sheet name
+        first_word_matches = difflib.get_close_matches(c_words[0], s_words, n=1, cutoff=0.8)
+        if not first_word_matches:
+            continue
+            
+        # Calculate overlap score via fuzzy matching of words
+        fuzzy_matches = 0
+        for cw in c_words:
+            matches = difflib.get_close_matches(cw, s_words, n=1, cutoff=0.8)
+            if matches:
+                fuzzy_matches += 1
+        score = fuzzy_matches
+        
+        # also check substring match
+        c_joined = "".join(c_words)
+        s_joined = "".join(s_words)
+        if c_joined == s_joined:
+            score += 5
+        elif c_joined in s_joined or s_joined in c_joined:
+            score += 2
+            
+        if score > max_score and score >= 1:
+            max_score = score
+            best_match = sname
+            
+    return best_match
+
+def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path):
+    """
+    Automates Microsoft Excel on Windows via COM to write the client_key to B13
+    of sheet 'Invoice', recalculate all formulas, and export the sheet as PDF.
+    """
+    if not EXCEL_AVAILABLE:
+        raise RuntimeError("Microsoft Excel is not installed or pywin32 is not configured.")
+        
+    import pythoncom
+    import win32com.client
+    import os
+    
+    pythoncom.CoInitialize()
+    excel = None
+    wb = None
+    try:
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        
+        abs_excel = os.path.abspath(excel_path)
+        abs_pdf = os.path.abspath(pdf_path)
+        
+        os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
+        wb = excel.Workbooks.Open(abs_excel)
+        
+        ws = wb.Sheets("Invoice")
+        ws.Range("B13").Value = client_key
+        
+        # Calculate
+        ws.Calculate()
+        
+        # Save workbook changes so openpyxl data_only reads recalculated values
+        wb.Save()
+        
+        # Export sheet Invoice as PDF
+        ws.ExportAsFixedFormat(0, abs_pdf)
+        wb.Close(False)
+        return True
+    except Exception as e:
+        print(f"Excel COM Invoice export failed: {e}")
+        raise e
+    finally:
+        if wb:
+            try:
+                wb.Close(False)
+            except:
+                pass
+        if excel:
+            try:
+                excel.Quit()
+            except:
+                pass
+        pythoncom.CoUninitialize()
+
+def parse_single_excel_sheet(excel_path):
+    """
+    Redesigned to support parsing the CCPL Master Sheet format.
+    Returns (company_details, clients) where company_details may be None if not CCPL.
+    """
+    try:
+        wb = openpyxl.load_workbook(excel_path, data_only=True)
+    except Exception as e:
+        print(f"Error loading single Excel file {excel_path}: {e}")
+        return None, []
+
+    # If it is a CCPL master sheet
+    if "Master File" in wb.sheetnames:
+        # 1. Parse Company & Bank details from Invoice sheet
+        company_details = {}
+        if "Invoice" in wb.sheetnames:
+            ws_inv = wb["Invoice"]
+            company_details["company_name"] = str(ws_inv.cell(row=1, column=4).value or "Cedrus Consultants Pvt Ltd").strip()
+            company_details["company_division"] = str(ws_inv.cell(row=3, column=4).value or "").strip()
+            company_details["company_address"] = str(ws_inv.cell(row=4, column=4).value or "").strip()
+            
+            company_details["company_phone"] = clean_label_val(ws_inv.cell(row=6, column=4).value, "Mobile Number")
+            company_details["company_pan"] = clean_label_val(ws_inv.cell(row=7, column=4).value, "Pan Number")
+            company_details["company_gstin"] = clean_label_val(ws_inv.cell(row=8, column=4).value, "GSTIN")
+            
+            company_details["company_bank_name"] = clean_label_val(ws_inv.cell(row=35, column=2).value, "Bank Account Details")
+            company_details["company_bank_branch"] = clean_label_val(ws_inv.cell(row=36, column=2).value, "Bank Branch Address")
+            company_details["company_bank_account_name"] = clean_label_val(ws_inv.cell(row=37, column=2).value, "Account Name")
+            company_details["company_bank_account_type"] = clean_label_val(ws_inv.cell(row=38, column=2).value, "Account Type")
+            company_details["company_bank_account"] = clean_label_val(ws_inv.cell(row=39, column=2).value, "Account Number")
+            company_details["company_bank_ifsc"] = clean_label_val(ws_inv.cell(row=40, column=2).value, "IFSC Code")
+            
+            company_details["authorized_signatory"] = str(ws_inv.cell(row=37, column=8).value or "").strip()
+            company_details["authorized_signatory_title"] = str(ws_inv.cell(row=36, column=8).value or "").strip()
+        
+        # 2. Parse client records from Master File
+        clients = []
+        ws_master = wb["Master File"]
+        header_row = 3
+        headers = []
+        for c in range(1, ws_master.max_column + 1):
+            val = ws_master.cell(row=header_row, column=c).value
+            headers.append(str(val).strip().lower().replace(" ", "_") if val else f"col_{c}")
+        
+        for r in range(header_row + 1, ws_master.max_row + 1):
+            client_name = ws_master.cell(row=r, column=3).value
+            if not client_name:
+                continue
+            
+            # Map columns
+            row_dict = {}
+            for col_idx, h in enumerate(headers):
+                row_dict[h] = ws_master.cell(row=r, column=col_idx + 1).value
+            
+            email = str(row_dict.get("client_email_id") or "").strip()
+            invoice_no = str(row_dict.get("invoice_no") or "").strip()
+            rate = row_dict.get("fee_@") or 0.0
+            address = str(row_dict.get("address_1") or "").strip()
+            state = str(row_dict.get("state") or "").strip()
+            particulars = str(row_dict.get("particular") or "").strip()
+            
+            val_n = ws_master.cell(row=r, column=14).value
+            val_o = ws_master.cell(row=r, column=15).value
+            
+            valuation = row_dict.get("value") or 0.0
+            taxable_amount = row_dict.get("taxable_amt") or 0.0
+            cgst = row_dict.get("cgst") or 0.0
+            sgst = row_dict.get("sgst") or 0.0
+            igst = row_dict.get("isgt") or 0.0
+            total_amount = row_dict.get("total_inv_amt") or 0.0
+            
+            if "#value" in state.lower() or not state:
+                if igst > 0:
+                    state = "Out of State"
+                else:
+                    state = "Maharashtra"
+            
+            matched_sheet = get_best_sheet_match(client_name, wb.sheetnames)
+            
+            clients.append({
+                "client_name": client_name,
+                "client_type": "Type 1",
+                "state": state,
+                "email": email,
+                "cc_email": "",
+                "address": address,
+                "gstin": "",
+                "valuation": valuation,
+                "is_regular": total_amount > 0,
+                "custom_message": "",
+                "filename": excel_path,
+                "status": "Pending",
+                "matched_sheet": matched_sheet,
+                "fee_amount": taxable_amount,
+                "cgst": cgst,
+                "sgst": sgst,
+                "igst": igst,
+                "total_amount": total_amount,
+                "invoice_number": invoice_no,
+                "rate": rate,
+                "particulars": particulars,
+                "period_start": str(val_n) if val_n else "",
+                "period_end": str(val_o) if val_o else ""
+            })
+            
+        wb.close()
+        return company_details, clients
+
+    # Fallback to standard sheet parser
+    sheet = wb.active
+    for name in wb.sheetnames:
+        if name.strip().lower() in ["clients", "invoices", "master", "billing", "sheet1"]:
+            sheet = wb[name]
+            break
+
+    rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        wb.close()
+        return None, []
+
+    # Find headers row
+    header_row_idx = 0
+    headers = None
+    keywords = ["client", "name", "email", "valuation", "aum", "value", "state", "gst"]
+    for idx, row in enumerate(rows):
+        if any(isinstance(val, str) and any(kw in val.lower() for kw in keywords) for val in row if val is not None):
+            headers = [str(h).strip().lower().replace(" ", "_") if h is not None else "" for h in row]
+            header_row_idx = idx
+            break
+
+    if headers is None:
+        headers = [str(h).strip().lower().replace(" ", "_") if h is not None else f"col_{i}" for i, h in enumerate(rows[0])]
+        header_row_idx = 0
+
+    clients = []
+    
+    for r_idx in range(header_row_idx + 1, len(rows)):
+        row_vals = rows[r_idx]
+        if not row_vals or not any(v is not None for v in row_vals):
+            continue
+
+        row_dict = {}
+        for col_idx, h in enumerate(headers):
+            if h and col_idx < len(row_vals):
+                row_dict[h] = row_vals[col_idx]
+
+        client_name = ""
+        client_type = "Type 1"
+        state = "Maharashtra"
+        email = ""
+        cc_email = ""
+        address = ""
+        gstin = ""
+        valuation = 0.0
+        is_regular = True
+        custom_message = ""
+
+        for k, v in row_dict.items():
+            if v is None:
+                continue
+            k_lower = k.lower()
+            if "client_name" in k_lower or "customer_name" in k_lower or k_lower in ["name", "client", "customer"]:
+                client_name = str(v).strip()
+            elif "client_type" in k_lower or k_lower in ["type", "classification"]:
+                client_type = str(v).strip()
+            elif k_lower in ["state", "supply", "place_of_supply", "supply_place"]:
+                state = str(v).strip()
+            elif k_lower in ["email", "email_address", "mail", "to"]:
+                email = str(v).strip()
+            elif k_lower in ["cc", "cc_email", "email_cc"]:
+                cc_email = str(v).strip()
+            elif "address" in k_lower:
+                address = str(v).strip()
+            elif "gstin" in k_lower or k_lower == "gst":
+                gstin = str(v).strip()
+            elif "valuation" in k_lower or "value" in k_lower or "portfolio" in k_lower or k_lower == "aum":
+                try:
+                    if isinstance(v, str):
+                        v = v.replace("₹", "").replace("$", "").replace(",", "").strip()
+                    valuation = float(v)
+                except:
+                    valuation = 0.0
+            elif "regular" in k_lower or "active" in k_lower or "billable" in k_lower or k_lower == "status":
+                val_str = str(v).strip().lower()
+                if val_str in ["no", "false", "0", "inactive", "non-regular"]:
+                    is_regular = False
+                else:
+                    is_regular = True
+            elif "message" in k_lower or "body" in k_lower or "msg" in k_lower:
+                custom_message = str(v).strip()
+
+        if not client_name and (email or valuation > 0):
+            client_name = f"Client Row {r_idx + 1}"
+
+        if client_name:
+            clients.append({
+                "client_name": client_name,
+                "client_type": client_type,
+                "state": state,
+                "email": email,
+                "cc_email": cc_email,
+                "address": address,
+                "gstin": gstin,
+                "valuation": valuation,
+                "is_regular": is_regular,
+                "custom_message": custom_message,
+                "filename": excel_path,
+                "status": "Pending"
+            })
+
+    wb.close()
+    return None, clients
+

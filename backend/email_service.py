@@ -116,11 +116,20 @@ def send_client_email(smtp_config, client_info, subject_template, body_template,
         "Valuation": invoice_details.get("valuation", 0.0),
         "FeeAmount": invoice_details.get("fee_amount", 0.0),
         "TotalAmount": invoice_details.get("total_amount", 0.0),
+        "CustomMessage": invoice_details.get("custom_message", "") or ""
     }
     
     try:
         subject = subject_template.format(**context)
         body = body_template.format(**context)
+        
+        # If custom message is not already formatted in body, append it before Best Regards or at the end
+        custom_msg = invoice_details.get("custom_message", "")
+        if custom_msg and "{CustomMessage}" not in body_template:
+            if "Best Regards" in body:
+                body = body.replace("Best Regards", f"{custom_msg}\n\nBest Regards")
+            else:
+                body = f"{body}\n\n{custom_msg}"
     except Exception as e:
         # Fallback if formatting fails due to mismatched brackets
         print(f"Template formatting error: {e}. Using raw text.")
@@ -133,3 +142,4 @@ def send_client_email(smtp_config, client_info, subject_template, body_template,
         return send_outlook_email(to_email, cc_email, subject, body, attachments, display=display_outlook)
     else:
         return send_smtp_email(smtp_config, to_email, cc_email, subject, body, attachments)
+

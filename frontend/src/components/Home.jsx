@@ -12,7 +12,7 @@ import {
   Percent
 } from 'lucide-react';
 
-export default function Home({ setTab, setQueue, setFolderPath, folderPath, queue }) {
+export default function Home({ setTab, setQueue, setFolderPath, folderPath, queue, setImportMode }) {
   const [loading, setLoading] = useState(false);
   const [recentBatches, setRecentBatches] = useState([]);
   const [stats, setStats] = useState({
@@ -76,6 +76,7 @@ export default function Home({ setTab, setQueue, setFolderPath, folderPath, queu
       if (data.folder_path) {
         setFolderPath(data.folder_path);
         setQueue(data.files || []);
+        setImportMode('folder');
       }
     } catch (err) {
       setError(err.message || 'Failed to select folder.');
@@ -83,6 +84,30 @@ export default function Home({ setTab, setQueue, setFolderPath, folderPath, queu
       setLoading(false);
     }
   };
+
+  const handleSelectExcelSheet = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/api/excel/select`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        throw new Error(await res.text() || "Failed to open file picker.");
+      }
+      const data = await res.json();
+      if (data.excel_path) {
+        setFolderPath(data.folder_path); // Use folder containing Excel for output pdfs
+        setQueue(data.files || []);
+        setImportMode('sheet');
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to select Excel file.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
 
   const handleLoadToWorkbench = () => {
     if (queue.length > 0) {
@@ -210,26 +235,51 @@ export default function Home({ setTab, setQueue, setFolderPath, folderPath, queu
 
           <div className="mt-6 relative z-10">
             {folderPath && queue.length > 0 ? (
-              <button
-                onClick={handleLoadToWorkbench}
-                className="w-full bg-primary text-on-primary hover:bg-primary/90 py-3 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-primary/10 cursor-pointer active:scale-95"
-              >
-                Configure Queue & Run
-                <ArrowRight className="h-4 w-4" />
-              </button>
+              <div className="space-y-3">
+                <button
+                  onClick={handleLoadToWorkbench}
+                  className="w-full bg-primary text-on-primary hover:bg-primary/90 py-3 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-primary/10 cursor-pointer active:scale-95"
+                >
+                  Configure Queue & Run
+                  <ArrowRight className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => {
+                    setFolderPath('');
+                    setQueue([]);
+                  }}
+                  className="w-full bg-surface-lowest text-on-surface hover:bg-surface-container-high py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all border border-outline-variant/30 cursor-pointer active:scale-95"
+                >
+                  Reset Ingest Source
+                </button>
+              </div>
             ) : (
-              <button
-                onClick={handleSelectFolder}
-                disabled={loading}
-                className="w-full bg-primary text-on-primary hover:bg-primary/90 py-3 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-primary/10 cursor-pointer active:scale-95 disabled:opacity-50"
-              >
-                {loading ? 'Opening Dialog...' : (
-                  <>
-                    <FolderOpen className="h-4 w-4" />
-                    Initiate Batch Scan
-                  </>
-                )}
-              </button>
+              <div className="space-y-3">
+                <button
+                  onClick={handleSelectFolder}
+                  disabled={loading}
+                  className="w-full bg-primary text-on-primary hover:bg-primary/90 py-3 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-primary/10 cursor-pointer active:scale-95 disabled:opacity-50"
+                >
+                  {loading ? 'Opening Dialog...' : (
+                    <>
+                      <FolderOpen className="h-4 w-4" />
+                      Scan Folder (Multi-file)
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={handleSelectExcelSheet}
+                  disabled={loading}
+                  className="w-full bg-surface-lowest text-on-surface hover:bg-surface-container-high py-3 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all border border-outline-variant/30 cursor-pointer active:scale-95 disabled:opacity-50"
+                >
+                  {loading ? 'Opening Dialog...' : (
+                    <>
+                      <FolderOpen className="h-4 w-4 text-primary" />
+                      Import Billing Sheet (Single-sheet)
+                    </>
+                  )}
+                </button>
+              </div>
             )}
           </div>
         </div>

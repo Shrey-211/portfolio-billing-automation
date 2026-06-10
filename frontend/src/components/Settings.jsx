@@ -9,7 +9,10 @@ import {
   Percent, 
   Mail, 
   Info,
-  CreditCard
+  CreditCard,
+  Lock,
+  Unlock,
+  AlertCircle
 } from 'lucide-react';
 
 export default function Settings() {
@@ -17,6 +20,10 @@ export default function Settings() {
   const [feeRules, setFeeRules] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saveStatus, setSaveStatus] = useState('');
+  
+  // Custom Lock State for Auto-Imported Profile details
+  const [profileLocked, setProfileLocked] = useState(true);
+  const [showLegacySlabs, setShowLegacySlabs] = useState(false);
 
   useEffect(() => {
     fetchSettings();
@@ -70,7 +77,7 @@ export default function Settings() {
   };
 
   const handleSaveAll = async (e) => {
-    e.preventDefault();
+    if (e) e.preventDefault();
     setLoading(true);
     setSaveStatus('');
     try {
@@ -106,7 +113,7 @@ export default function Settings() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h2 className="text-3xl font-extrabold text-on-surface tracking-tight font-headline-xl">System Settings</h2>
-          <p className="mt-1 text-sm text-on-surface-variant font-medium">Configure company profiles, GST rates, fee brackets, SMTP details, and email layouts.</p>
+          <p className="mt-1 text-sm text-on-surface-variant font-medium">Manage invoice defaults, mailing protocol, and templates. Ingested profiles can be overridden below.</p>
         </div>
 
         <div className="flex items-center gap-3">
@@ -134,57 +141,116 @@ export default function Settings() {
 
       <form onSubmit={handleSaveAll} className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         
-        {/* PANEL 1: Company Profile Info */}
-        <div className="glass-panel rounded-xl p-6 flex flex-col justify-between hover:border-primary/40 transition-colors duration-300">
+        {/* PANEL 1: Company Profile (Read-Only by default with Manual Override option) */}
+        <div className="glass-panel rounded-xl p-6 flex flex-col justify-between hover:border-primary/45 transition-colors duration-300">
           <div className="space-y-6">
-            <h3 className="text-base font-bold text-on-surface flex items-center gap-2 pb-3 border-b border-outline-variant/30">
-              <Building className="h-4.5 w-4.5 text-primary" />
-              Company Billing Profile
-            </h3>
+            <div className="flex justify-between items-center pb-3 border-b border-outline-variant/30">
+              <h3 className="text-base font-bold text-on-surface flex items-center gap-2">
+                <Building className="h-4.5 w-4.5 text-primary" />
+                Company Billing Profile
+              </h3>
+              <button
+                type="button"
+                onClick={() => setProfileLocked(!profileLocked)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded text-[10px] font-bold border transition-colors cursor-pointer ${
+                  profileLocked 
+                    ? 'bg-secondary/10 text-secondary border-secondary/20 hover:bg-secondary/20' 
+                    : 'bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20'
+                }`}
+              >
+                {profileLocked ? (
+                  <>
+                    <Lock className="h-3.5 w-3.5" />
+                    Auto-Linked (Excel)
+                  </>
+                ) : (
+                  <>
+                    <Unlock className="h-3.5 w-3.5 animate-pulse" />
+                    Unlocked (Manual)
+                  </>
+                )}
+              </button>
+            </div>
+
+            {profileLocked && (
+              <div className="bg-secondary/5 border border-secondary/20 rounded-lg p-3.5 flex items-start gap-2.5">
+                <Info className="h-4 w-4 text-secondary mt-0.5 flex-shrink-0" />
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-secondary">Inferred from Active Workbook</p>
+                  <p className="text-[11px] text-on-surface-variant leading-relaxed mt-0.5">
+                    These settings are automatically parsed from the **Invoice** sheet of your uploaded Excel file. Click the badge above to manually override.
+                  </p>
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2 sm:col-span-2">
                 <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Company Registered Name</label>
-                <input
-                  type="text"
-                  name="company_name"
-                  value={settings.company_name || ''}
-                  onChange={handleSettingChange}
-                  className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all font-sans"
-                />
+                {profileLocked ? (
+                  <div className="w-full bg-surface-lowest/20 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-xs text-on-surface/85 font-semibold font-sans">
+                    {settings.company_name || 'No master sheet loaded yet'}
+                  </div>
+                ) : (
+                  <input
+                    type="text"
+                    name="company_name"
+                    value={settings.company_name || ''}
+                    onChange={handleSettingChange}
+                    className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all font-sans"
+                  />
+                )}
               </div>
 
               <div className="space-y-2 sm:col-span-2">
                 <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Registered Office Address</label>
-                <input
-                  type="text"
-                  name="company_address"
-                  value={settings.company_address || ''}
-                  onChange={handleSettingChange}
-                  className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all font-sans"
-                />
+                {profileLocked ? (
+                  <div className="w-full bg-surface-lowest/20 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-xs text-on-surface/85 font-semibold font-sans leading-relaxed">
+                    {settings.company_address || 'No master sheet loaded yet'}
+                  </div>
+                ) : (
+                  <input
+                    type="text"
+                    name="company_address"
+                    value={settings.company_address || ''}
+                    onChange={handleSettingChange}
+                    className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all font-sans"
+                  />
+                )}
               </div>
 
               <div className="space-y-2">
                 <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Company GSTIN</label>
-                <input
-                  type="text"
-                  name="company_gstin"
-                  value={settings.company_gstin || ''}
-                  onChange={handleSettingChange}
-                  className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface font-mono tracking-wider focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all"
-                />
+                {profileLocked ? (
+                  <div className="w-full bg-surface-lowest/20 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-xs text-on-surface/85 font-mono font-bold">
+                    {settings.company_gstin || 'Not configured'}
+                  </div>
+                ) : (
+                  <input
+                    type="text"
+                    name="company_gstin"
+                    value={settings.company_gstin || ''}
+                    onChange={handleSettingChange}
+                    className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface font-mono tracking-wider focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all"
+                  />
+                )}
               </div>
 
               <div className="space-y-2">
                 <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Support Email</label>
-                <input
-                  type="email"
-                  name="company_email"
-                  value={settings.company_email || ''}
-                  onChange={handleSettingChange}
-                  className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all font-sans"
-                />
+                {profileLocked ? (
+                  <div className="w-full bg-surface-lowest/20 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-xs text-on-surface/85 font-semibold font-sans">
+                    {settings.company_email || 'Not configured'}
+                  </div>
+                ) : (
+                  <input
+                    type="email"
+                    name="company_email"
+                    value={settings.company_email || ''}
+                    onChange={handleSettingChange}
+                    className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all font-sans"
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -198,60 +264,78 @@ export default function Settings() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2 col-span-2">
                 <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Bank Name</label>
-                <input
-                  type="text"
-                  name="company_bank_name"
-                  value={settings.company_bank_name || ''}
-                  onChange={handleSettingChange}
-                  className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all font-sans"
-                />
+                {profileLocked ? (
+                  <div className="w-full bg-surface-lowest/20 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-xs text-on-surface/85 font-semibold">
+                    {settings.company_bank_name || 'No bank info loaded'}
+                  </div>
+                ) : (
+                  <input
+                    type="text"
+                    name="company_bank_name"
+                    value={settings.company_bank_name || ''}
+                    onChange={handleSettingChange}
+                    className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all font-sans"
+                  />
+                )}
               </div>
+              
               <div className="space-y-2">
                 <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Account Number</label>
-                <input
-                  type="text"
-                  name="company_bank_account"
-                  value={settings.company_bank_account || ''}
-                  onChange={handleSettingChange}
-                  className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface font-mono tracking-wider focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all"
-                />
+                {profileLocked ? (
+                  <div className="w-full bg-surface-lowest/20 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-xs text-on-surface/85 font-mono">
+                    {settings.company_bank_account || 'Not configured'}
+                  </div>
+                ) : (
+                  <input
+                    type="text"
+                    name="company_bank_account"
+                    value={settings.company_bank_account || ''}
+                    onChange={handleSettingChange}
+                    className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface font-mono tracking-wider focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all"
+                  />
+                )}
               </div>
+              
               <div className="space-y-2">
                 <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Bank IFSC Code</label>
-                <input
-                  type="text"
-                  name="company_bank_ifsc"
-                  value={settings.company_bank_ifsc || ''}
-                  onChange={handleSettingChange}
-                  className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface font-mono tracking-wider focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all"
-                />
+                {profileLocked ? (
+                  <div className="w-full bg-surface-lowest/20 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-xs text-on-surface/85 font-mono">
+                    {settings.company_bank_ifsc || 'Not configured'}
+                  </div>
+                ) : (
+                  <input
+                    type="text"
+                    name="company_bank_ifsc"
+                    value={settings.company_bank_ifsc || ''}
+                    onChange={handleSettingChange}
+                    className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface font-mono tracking-wider focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all"
+                  />
+                )}
               </div>
             </div>
           </div>
         </div>
 
-        {/* PANEL 2: Fee Engine Bracket Configuration */}
-        <div className="glass-panel rounded-xl p-6 flex flex-col justify-between hover:border-primary/40 transition-colors duration-300">
+        {/* PANEL 2: Active Calculation & Fallback Rules */}
+        <div className="glass-panel rounded-xl p-6 flex flex-col justify-between hover:border-primary/45 transition-colors duration-300">
           <div className="space-y-6">
             <h3 className="text-base font-bold text-on-surface flex items-center gap-2 pb-3 border-b border-outline-variant/30">
               <Percent className="h-4.5 w-4.5 text-primary" />
               Calculation Configuration
             </h3>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Calculation Type</label>
-                <select
-                  name="fee_calculation_type"
-                  value={settings.fee_calculation_type || 'flat'}
-                  onChange={handleSettingChange}
-                  className="w-full bg-surface-lowest/50 border border-[#232d3f]/45 rounded-lg px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/80 transition-all cursor-pointer"
-                >
-                  <option value="flat" className="bg-[#0b0e15]">Flat Tier Rate</option>
-                  <option value="slab" className="bg-[#0b0e15]">Progressive Slab Rate</option>
-                </select>
+            {/* Active CCPL Engine Indicator */}
+            <div className="bg-primary/5 border border-primary/20 rounded-lg p-4 space-y-2.5">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-primary animate-pulse"></div>
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-primary">Excel Automation Active</span>
               </div>
+              <p className="text-[11px] text-on-surface-variant leading-relaxed">
+                Billing fees and client allocations are calculated directly inside the Excel workbook. Overrides synced from the workbench are dynamically recalculated by Excel COM formulas.
+              </p>
+            </div>
 
+            <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Invoice Prefix</label>
                 <input
@@ -262,84 +346,108 @@ export default function Settings() {
                   className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2 text-xs text-on-surface font-mono tracking-wider focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all"
                 />
               </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Fallback Calculation Method</label>
+                <select
+                  name="fee_calculation_type"
+                  value={settings.fee_calculation_type || 'flat'}
+                  onChange={handleSettingChange}
+                  className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/80 transition-all cursor-pointer"
+                >
+                  <option value="flat" className="bg-[#0b0e15]">Flat Tier Rate</option>
+                  <option value="slab" className="bg-[#0b0e15]">Progressive Slab Rate</option>
+                </select>
+              </div>
             </div>
 
-            <div className="space-y-3">
+            {/* Collapsible Legacy slabs for clean look */}
+            <div className="space-y-3 pt-2">
               <div className="flex justify-between items-center">
-                <label className="text-xs font-bold text-on-surface uppercase tracking-wider">Fee Bracket Slabs</label>
                 <button
                   type="button"
-                  onClick={handleAddRule}
-                  className="inline-flex items-center px-3 py-1.5 bg-primary/10 text-primary border border-primary/20 rounded hover:bg-primary/20 transition-colors text-[10px] font-bold cursor-pointer hover:scale-[1.02] active:scale-95"
+                  onClick={() => setShowLegacySlabs(!showLegacySlabs)}
+                  className="text-xs font-semibold text-primary hover:text-primary-fixed hover:underline transition-all flex items-center gap-1.5 cursor-pointer"
                 >
-                  <Plus className="h-3 w-3 mr-1" />
-                  Add Bracket
+                  {showLegacySlabs ? 'Hide' : 'Show'} Legacy Bracket Slabs (Folder Mode)
                 </button>
+                {showLegacySlabs && (
+                  <button
+                    type="button"
+                    onClick={handleAddRule}
+                    className="inline-flex items-center px-3 py-1 bg-primary/10 text-primary border border-primary/20 rounded hover:bg-primary/20 transition-colors text-[9px] font-bold cursor-pointer"
+                  >
+                    <Plus className="h-3 w-3 mr-1" />
+                    Add Bracket
+                  </button>
+                )}
               </div>
 
-              <div className="border border-[#232d3f]/50 rounded-lg overflow-hidden bg-surface-lowest/20">
-                <div className="max-h-[220px] overflow-y-auto scrollbar-thin">
-                  <table className="w-full text-left border-collapse">
-                    <thead className="bg-surface-lowest/80 border-b border-[#232d3f]/40">
-                      <tr>
-                        <th className="px-3 py-2.5 text-[9px] font-bold text-on-surface-variant uppercase tracking-wider">Min Value (INR)</th>
-                        <th className="px-3 py-2.5 text-[9px] font-bold text-on-surface-variant uppercase tracking-wider">Max Value (INR)</th>
-                        <th className="px-3 py-2.5 text-[9px] font-bold text-on-surface-variant uppercase tracking-wider">Rate (%)</th>
-                        <th className="px-3 py-2.5 text-[9px] font-bold text-on-surface-variant uppercase tracking-wider">Flat Fee (₹)</th>
-                        <th className="px-3 py-2.5 text-center text-[9px] font-bold text-on-surface-variant uppercase tracking-wider w-10">Del</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#232d3f]/20 bg-slate-900/10 text-xs">
-                      {feeRules.map((rule, idx) => (
-                        <tr key={idx} className="hover:bg-surface-container-highest/20 transition-colors">
-                          <td className="px-2 py-1">
-                            <input
-                              type="number"
-                              value={rule.min_value}
-                              onChange={(e) => handleRuleChange(idx, 'min_value', e.target.value)}
-                              className="w-full bg-surface-lowest/40 border border-[#232d3f]/40 rounded px-2 py-1 text-xs text-on-surface font-mono focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80"
-                            />
-                          </td>
-                          <td className="px-2 py-1">
-                            <input
-                              type="number"
-                              value={rule.max_value}
-                              onChange={(e) => handleRuleChange(idx, 'max_value', e.target.value)}
-                              className="w-full bg-surface-lowest/40 border border-[#232d3f]/40 rounded px-2 py-1 text-xs text-on-surface font-mono focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80"
-                            />
-                          </td>
-                          <td className="px-2 py-1">
-                            <input
-                              type="number"
-                              step="0.01"
-                              value={rule.percentage}
-                              onChange={(e) => handleRuleChange(idx, 'percentage', e.target.value)}
-                              className="w-full bg-surface-lowest/40 border border-[#232d3f]/40 rounded px-2 py-1 text-xs text-on-surface font-mono focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80"
-                            />
-                          </td>
-                          <td className="px-2 py-1">
-                            <input
-                              type="number"
-                              value={rule.flat_rate}
-                              onChange={(e) => handleRuleChange(idx, 'flat_rate', e.target.value)}
-                              className="w-full bg-surface-lowest/40 border border-[#232d3f]/40 rounded px-2 py-1 text-xs text-on-surface font-mono focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80"
-                            />
-                          </td>
-                          <td className="px-2 py-1 text-center">
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteRule(idx)}
-                              className="p-1 text-on-surface-variant hover:text-error rounded transition-colors cursor-pointer"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </td>
+              {showLegacySlabs && (
+                <div className="border border-outline-variant/30 rounded-lg overflow-hidden bg-surface-lowest/20 animate-fade-in">
+                  <div className="max-h-[170px] overflow-y-auto scrollbar-thin">
+                    <table className="w-full text-left border-collapse">
+                      <thead className="bg-surface-lowest/80 border-b border-[#232d3f]/40">
+                        <tr>
+                          <th className="px-3 py-2 text-[9px] font-bold text-on-surface-variant uppercase tracking-wider">Min (INR)</th>
+                          <th className="px-3 py-2 text-[9px] font-bold text-on-surface-variant uppercase tracking-wider">Max (INR)</th>
+                          <th className="px-3 py-2 text-[9px] font-bold text-on-surface-variant uppercase tracking-wider">Rate (%)</th>
+                          <th className="px-3 py-2 text-[9px] font-bold text-on-surface-variant uppercase tracking-wider">Flat (₹)</th>
+                          <th className="px-3 py-2 text-center text-[9px] font-bold text-on-surface-variant uppercase tracking-wider w-8">Del</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y divide-outline-variant/20 bg-slate-900/10 text-xs">
+                        {feeRules.map((rule, idx) => (
+                          <tr key={idx} className="hover:bg-surface-container-highest/20 transition-colors">
+                            <td className="px-2 py-0.5">
+                              <input
+                                type="number"
+                                value={rule.min_value}
+                                onChange={(e) => handleRuleChange(idx, 'min_value', e.target.value)}
+                                className="w-full bg-surface-lowest/40 border border-outline-variant/20 rounded px-1.5 py-0.5 text-xs text-on-surface font-mono"
+                              />
+                            </td>
+                            <td className="px-2 py-0.5">
+                              <input
+                                type="number"
+                                value={rule.max_value}
+                                onChange={(e) => handleRuleChange(idx, 'max_value', e.target.value)}
+                                className="w-full bg-surface-lowest/40 border border-outline-variant/20 rounded px-1.5 py-0.5 text-xs text-on-surface font-mono"
+                              />
+                            </td>
+                            <td className="px-2 py-0.5">
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={rule.percentage}
+                                onChange={(e) => handleRuleChange(idx, 'percentage', e.target.value)}
+                                className="w-full bg-surface-lowest/40 border border-outline-variant/20 rounded px-1.5 py-0.5 text-xs text-on-surface font-mono"
+                              />
+                            </td>
+                            <td className="px-2 py-0.5">
+                              <input
+                                type="number"
+                                value={rule.flat_rate}
+                                onChange={(e) => handleRuleChange(idx, 'flat_rate', e.target.value)}
+                                className="w-full bg-surface-lowest/40 border border-outline-variant/20 rounded px-1.5 py-0.5 text-xs text-on-surface font-mono"
+                              />
+                            </td>
+                            <td className="px-2 py-0.5 text-center">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteRule(idx)}
+                                className="p-1 text-on-surface-variant hover:text-error transition-colors cursor-pointer"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
 
@@ -384,7 +492,7 @@ export default function Settings() {
         </div>
 
         {/* PANEL 3: SMTP Mail Configuration */}
-        <div className="glass-panel rounded-xl p-6 space-y-6 hover:border-primary/40 transition-colors duration-300">
+        <div className="glass-panel rounded-xl p-6 space-y-6 hover:border-primary/45 transition-colors duration-300">
           <h3 className="text-base font-bold text-on-surface flex items-center gap-2 pb-3 border-b border-outline-variant/30">
             <Mail className="h-4.5 w-4.5 text-primary" />
             Distribution Server Settings
@@ -397,7 +505,7 @@ export default function Settings() {
                 name="email_use_outlook"
                 value={settings.email_use_outlook || '0'}
                 onChange={handleSettingChange}
-                className="w-full bg-surface-lowest/50 border border-[#232d3f]/45 rounded-lg px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/80 transition-all cursor-pointer"
+                className="w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/80 transition-all cursor-pointer"
               >
                 <option value="0" className="bg-[#0b0e15]">SMTP (External Host)</option>
                 <option value="1" className="bg-[#0b0e15]">Microsoft Outlook Desktop (COM)</option>
@@ -465,7 +573,7 @@ export default function Settings() {
         </div>
 
         {/* PANEL 4: Template Layout Settings */}
-        <div className="glass-panel rounded-xl p-6 space-y-6 hover:border-primary/40 transition-colors duration-300">
+        <div className="glass-panel rounded-xl p-6 space-y-6 hover:border-primary/45 transition-colors duration-300">
           <h3 className="text-base font-bold text-on-surface flex items-center gap-2 pb-3 border-b border-outline-variant/30">
             <Info className="h-4.5 w-4.5 text-primary" />
             Email Template Layout
@@ -494,14 +602,14 @@ export default function Settings() {
               />
             </div>
 
-            <div className="p-4 bg-surface-lowest/40 rounded-lg border border-[#232d3f]/40 space-y-1">
+            <div className="p-4 bg-surface-lowest/40 rounded-lg border border-outline-variant/20 space-y-1">
               <p className="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant">Available Placeholders</p>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-2 text-[10px] text-primary font-mono font-semibold">
-                <div><code className="bg-surface-lowest/60 px-1 py-0.5 rounded border border-[#232d3f]/20">{'{ClientName}'}</code></div>
-                <div><code className="bg-surface-lowest/60 px-1 py-0.5 rounded border border-[#232d3f]/20">{'{InvoiceNumber}'}</code></div>
-                <div><code className="bg-surface-lowest/60 px-1 py-0.5 rounded border border-[#232d3f]/20">{'{Valuation}'}</code></div>
-                <div><code className="bg-surface-lowest/60 px-1 py-0.5 rounded border border-[#232d3f]/20">{'{FeeAmount}'}</code></div>
-                <div><code className="bg-surface-lowest/60 px-1 py-0.5 rounded border border-[#232d3f]/20">{'{TotalAmount}'}</code></div>
+                <div><code className="bg-surface-lowest/60 px-1 py-0.5 rounded border border-outline-variant/10">{'{ClientName}'}</code></div>
+                <div><code className="bg-surface-lowest/60 px-1 py-0.5 rounded border border-outline-variant/10">{'{InvoiceNumber}'}</code></div>
+                <div><code className="bg-surface-lowest/60 px-1 py-0.5 rounded border border-outline-variant/10">{'{Valuation}'}</code></div>
+                <div><code className="bg-surface-lowest/60 px-1 py-0.5 rounded border border-outline-variant/10">{'{FeeAmount}'}</code></div>
+                <div><code className="bg-surface-lowest/60 px-1 py-0.5 rounded border border-outline-variant/10">{'{TotalAmount}'}</code></div>
               </div>
             </div>
           </div>

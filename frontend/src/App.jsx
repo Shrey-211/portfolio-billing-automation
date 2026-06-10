@@ -13,14 +13,30 @@ import {
   Activity,
   User,
   Sun,
-  Moon
+  Moon,
+  Table,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
+import MasterSheet from './components/MasterSheet';
+
 
 function App() {
   const [activeTab, setActiveTab] = useState('home');
   const [folderPath, setFolderPath] = useState('');
   const [queue, setQueue] = useState([]);
   const [batchId, setBatchId] = useState(null);
+  const [importMode, setImportMode] = useState('folder'); // 'folder' or 'sheet'
+  const [isCollapsed, setIsCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === 'true');
+
+  const toggleSidebar = () => {
+    setIsCollapsed(prev => {
+      const next = !prev;
+      localStorage.setItem('sidebar-collapsed', String(next));
+      return next;
+    });
+  };
+
 
   // Theme support
   const [isDark, setIsDark] = useState(() => {
@@ -46,6 +62,7 @@ function App() {
     { id: 'workbench', label: 'File Queue', icon: FileSpreadsheet, badge: queue.length > 0 ? queue.length : null },
     { id: 'processing', label: 'Billing Engine', icon: Cpu },
     { id: 'results', label: 'Results & Delivery', icon: Send },
+    { id: 'master', label: 'Master Sheet', icon: Table },
     { id: 'settings', label: 'Settings', icon: SettingsIcon }
   ];
 
@@ -56,17 +73,28 @@ function App() {
       <div className="ambient-glow-secondary"></div>
       
       {/* SideNavBar - Styled according to Angel One Glassmorphism Guidelines */}
-      <aside className="w-72 bg-surface-lowest/80 backdrop-blur-xl border-r border-outline-variant/20 flex flex-col justify-between flex-shrink-0 z-50">
+      <aside className={`${isCollapsed ? 'w-20' : 'w-72'} bg-surface-lowest/80 backdrop-blur-xl border-r border-outline-variant/20 flex flex-col justify-between flex-shrink-0 z-50 transition-all duration-300 ease-in-out`}>
         <div className="flex flex-col flex-1">
           {/* Logo Header */}
-          <div className="h-20 px-6 flex items-center gap-3 pt-4">
-            <div className="w-10 h-10 rounded-lg bg-primary/20 flex items-center justify-center border border-primary/30">
-              <Activity className="h-5 w-5 text-primary animate-pulse" />
+          <div className={`h-20 ${isCollapsed ? 'px-2 flex-col justify-center gap-2 h-auto py-4' : 'px-6 flex-row justify-between'} flex items-center pt-4`}>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-primary/20 flex-shrink-0 flex items-center justify-center border border-primary/30">
+                <Activity className="h-5 w-5 text-primary animate-pulse" />
+              </div>
+              {!isCollapsed && (
+                <div className="animate-fade-in">
+                  <span className="text-lg font-extrabold text-primary tracking-wide block">AlphaBilling</span>
+                  <span className="block text-[10px] text-on-surface-variant uppercase tracking-widest opacity-70">Elite Portfolio Management</span>
+                </div>
+              )}
             </div>
-            <div>
-              <span className="text-lg font-extrabold text-primary tracking-wide block">AlphaBilling</span>
-              <span className="block text-[10px] text-on-surface-variant uppercase tracking-widest opacity-70">Elite Portfolio Management</span>
-            </div>
+            <button
+              onClick={toggleSidebar}
+              className={`p-1.5 rounded-lg hover:bg-surface-container-high/60 text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer border border-outline-variant/10 ${isCollapsed ? 'mt-2' : ''}`}
+              title={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+            >
+              {isCollapsed ? <ChevronRight className="h-4.5 w-4.5" /> : <ChevronLeft className="h-4.5 w-4.5" />}
+            </button>
           </div>
 
           {/* Navigation Links */}
@@ -78,22 +106,28 @@ function App() {
                 <button
                   key={item.id}
                   onClick={() => setActiveTab(item.id)}
-                  className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border-l-4 transition-all duration-200 active:scale-95 transition-transform ${
+                  className={`relative w-full flex items-center ${isCollapsed ? 'justify-center py-3' : 'justify-between px-4 py-3'} rounded-lg border-l-4 transition-all duration-200 active:scale-95 transition-transform ${
                     isActive 
                       ? 'bg-primary/10 text-primary font-bold border-primary' 
                       : 'text-on-surface-variant/70 hover:text-on-surface hover:bg-surface-container-high/30 border-transparent'
                   }`}
+                  title={isCollapsed ? item.label : ""}
                 >
-                  <span className="flex items-center gap-3">
-                    <Icon className={`h-4.5 w-4.5 transition-colors ${
+                  <span className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3'}`}>
+                    <Icon className={`h-4.5 w-4.5 flex-shrink-0 transition-colors ${
                       isActive ? 'text-primary' : 'text-on-surface-variant group-hover:text-primary'
                     }`} />
-                    <span className="text-sm font-semibold">{item.label}</span>
+                    {!isCollapsed && <span className="text-sm font-semibold animate-fade-in">{item.label}</span>}
                   </span>
-                  {item.badge && (
+                  {!isCollapsed && item.badge && (
                     <span className={`inline-flex items-center justify-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
                       isActive ? 'bg-primary/20 text-primary' : 'bg-surface-container-low text-on-surface-variant'
                     }`}>
+                      {item.badge}
+                    </span>
+                  )}
+                  {isCollapsed && item.badge && (
+                    <span className="absolute top-1 right-2 inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full text-[8px] font-bold bg-primary text-on-primary border border-surface-lowest">
                       {item.badge}
                     </span>
                   )}
@@ -104,15 +138,17 @@ function App() {
         </div>
 
         {/* User profile block */}
-        <div className="p-4 border-t border-outline-variant/20 bg-surface-lowest/40">
-          <div className="flex items-center gap-3 p-1.5 rounded-lg bg-surface-container-low/40 border border-outline-variant/10">
-            <div className="h-9 w-9 rounded-full bg-surface-container border border-outline-variant flex items-center justify-center text-primary">
+        <div className={`p-4 border-t border-outline-variant/20 bg-surface-lowest/40 ${isCollapsed ? 'flex justify-center' : ''}`}>
+          <div className={`flex items-center ${isCollapsed ? 'justify-center p-1 w-11 h-11' : 'gap-3 p-1.5 w-full'} rounded-lg bg-surface-container-low/40 border border-outline-variant/10 transition-all duration-200`}>
+            <div className="h-9 w-9 rounded-full bg-surface-container border border-outline-variant flex flex-shrink-0 items-center justify-center text-primary">
               <User className="h-5 w-5" />
             </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold text-on-surface truncate">Advisor Console</p>
-              <p className="text-[9px] text-on-surface-variant truncate font-mono uppercase tracking-wider opacity-60">Antigravity Wealth</p>
-            </div>
+            {!isCollapsed && (
+              <div className="min-w-0 flex-1 animate-fade-in">
+                <p className="text-xs font-semibold text-on-surface truncate">Advisor Console</p>
+                <p className="text-[9px] text-on-surface-variant truncate font-mono uppercase tracking-wider opacity-60">Antigravity Wealth</p>
+              </div>
+            )}
           </div>
         </div>
       </aside>
@@ -143,6 +179,7 @@ function App() {
               setFolderPath={setFolderPath}
               folderPath={folderPath}
               queue={queue}
+              setImportMode={setImportMode}
             />
           )}
           
@@ -152,6 +189,7 @@ function App() {
               setQueue={setQueue}
               folderPath={folderPath}
               setTab={setActiveTab}
+              importMode={importMode}
             />
           )}
           
@@ -167,6 +205,10 @@ function App() {
               batchId={batchId}
               setBatchId={setBatchId}
             />
+          )}
+
+          {activeTab === 'master' && (
+            <MasterSheet folderPath={folderPath} />
           )}
           
           {activeTab === 'settings' && (

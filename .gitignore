@@ -75,4 +75,4 @@ test_data/gamma_trust.xlsx
 # OS-specific files
 .DS_Store
 Thumbs.db
-Desktop.ini
+test_data/

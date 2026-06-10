@@ -85,9 +85,33 @@ def init_db(db_path=None):
         portfolio_pdf_path TEXT,
         invoice_pdf_path TEXT,
         email_status TEXT DEFAULT 'Pending',
+        is_paid INTEGER DEFAULT 0,
+        payment_date TEXT,
+        custom_message TEXT,
+        invoice_number TEXT,
         FOREIGN KEY(batch_id) REFERENCES batches(id)
     )
     """)
+
+    # Ensure columns exist for older installations
+    try:
+        cursor.execute("ALTER TABLE job_items ADD COLUMN is_paid INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE job_items ADD COLUMN payment_date TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE job_items ADD COLUMN custom_message TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE job_items ADD COLUMN invoice_number TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+
     
     # Populate Default Settings if empty
     cursor.execute("SELECT COUNT(*) FROM settings")
@@ -231,21 +255,34 @@ def update_batch(batch_id, processed_files, failed_files, status, db_path=None):
 def add_job_item(item_data, db_path=None):
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
+    
+    if "custom_message" not in item_data:
+        item_data["custom_message"] = ""
+    if "is_paid" not in item_data:
+        item_data["is_paid"] = 0
+    if "payment_date" not in item_data:
+        item_data["payment_date"] = None
+    if "invoice_number" not in item_data:
+        item_data["invoice_number"] = ""
+        
     cursor.execute("""
     INSERT INTO job_items (
         batch_id, filename, client_name, valuation, fee_amount, 
         cgst, sgst, igst, total_amount, status, error_msg, 
-        portfolio_pdf_path, invoice_pdf_path, email_status
+        portfolio_pdf_path, invoice_pdf_path, email_status, custom_message,
+        is_paid, payment_date, invoice_number
     ) VALUES (
         :batch_id, :filename, :client_name, :valuation, :fee_amount, 
         :cgst, :sgst, :igst, :total_amount, :status, :error_msg, 
-        :portfolio_pdf_path, :invoice_pdf_path, :email_status
+        :portfolio_pdf_path, :invoice_pdf_path, :email_status, :custom_message,
+        :is_paid, :payment_date, :invoice_number
     )
     """, item_data)
     item_id = cursor.lastrowid
     conn.commit()
     conn.close()
     return item_id
+
 
 def update_job_item(item_id, updates_dict, db_path=None):
     conn = get_db_connection(db_path)
@@ -273,3 +310,22 @@ def get_recent_batches(limit=10, db_path=None):
     batches = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return batches
+
+def get_all_job_items(limit=1000, db_path=None):
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM job_items ORDER BY id DESC LIMIT ?", (limit,))
+    items = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return items
+
+def update_payment_status(item_id, is_paid, payment_date=None, db_path=None):
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE job_items SET is_paid = ?, payment_date = ? WHERE id = ?",
+        (is_paid, payment_date, item_id)
+    )
+    conn.commit()
+    conn.close()
+

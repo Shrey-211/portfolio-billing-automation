@@ -231,3 +231,14 @@ textarea::placeholder {
   font-weight: 700 !important;
 }
 
+/* Global Font Sizing Scaling by 1.3 */
+html {
+  font-size: 20.8px; /* 16px * 1.3 */
+}
+
+/* Overrides for hardcoded arbitrary text sizes in tailwind */
+.text-\[10px\] { font-size: 13px !important; }
+.text-\[9px\] { font-size: 11.7px !important; }
+.text-\[8px\] { font-size: 10.4px !important; }
+.text-\[11px\] { font-size: 14.3px !important; }
+

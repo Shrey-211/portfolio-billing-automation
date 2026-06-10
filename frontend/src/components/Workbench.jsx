@@ -22,7 +22,7 @@ const INDIAN_STATES = [
   "Uttarakhand", "West Bengal", "Delhi"
 ];
 
-export default function Workbench({ queue, setQueue, folderPath, setTab }) {
+export default function Workbench({ queue, setQueue, folderPath, setTab, importMode }) {
   const [selectedIdx, setSelectedIdx] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -36,8 +36,11 @@ export default function Workbench({ queue, setQueue, folderPath, setTab }) {
     cc_email: '',
     address: '',
     gstin: '',
-    valuation: 0.0
+    valuation: 0.0,
+    is_regular: true,
+    custom_message: ''
   });
+
 
   const handleEditRow = (idx) => {
     setSelectedIdx(idx);
@@ -51,12 +54,13 @@ export default function Workbench({ queue, setQueue, folderPath, setTab }) {
   };
 
   const handleInputChange = (e) => {
-    const { name, value } = e.target;
+    const { name, value, type, checked } = e.target;
     setFormState(prev => ({
       ...prev,
-      [name]: name === 'valuation' ? parseFloat(value) || 0.0 : value
+      [name]: type === 'checkbox' ? checked : (name === 'valuation' ? parseFloat(value) || 0.0 : value)
     }));
   };
+
 
   const handleSaveClient = async (e) => {
     e.preventDefault();
@@ -112,6 +116,7 @@ export default function Workbench({ queue, setQueue, folderPath, setTab }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           folder_path: folderPath,
+          import_mode: importMode,
           items: queue.map(q => ({
             filename: q.filename,
             client_name: q.client_name,
@@ -121,7 +126,9 @@ export default function Workbench({ queue, setQueue, folderPath, setTab }) {
             cc_email: q.cc_email || "",
             address: q.address || "",
             gstin: q.gstin || "",
-            valuation: q.valuation
+            valuation: q.valuation,
+            is_regular: q.is_regular !== false,
+            custom_message: q.custom_message || ""
           }))
         })
       });
@@ -186,6 +193,9 @@ export default function Workbench({ queue, setQueue, folderPath, setTab }) {
                   <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Type</th>
                   <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">State</th>
                   <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Valuation</th>
+                  {importMode === 'sheet' && (
+                    <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider text-center">Billable</th>
+                  )}
                   <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider text-center">Validation</th>
                   <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider text-center">Actions</th>
                 </tr>
@@ -204,6 +214,17 @@ export default function Workbench({ queue, setQueue, folderPath, setTab }) {
                       <td className="py-4 px-6 font-semibold text-on-surface font-mono">
                         ₹{item.valuation ? item.valuation.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
                       </td>
+                      {importMode === 'sheet' && (
+                        <td className="py-4 px-6 text-center">
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-bold ${
+                            item.is_regular !== false
+                              ? 'bg-secondary/15 text-secondary border border-secondary/25'
+                              : 'bg-on-surface-variant/10 text-on-surface-variant border border-outline-variant/30'
+                          }`}>
+                            {item.is_regular !== false ? 'Yes' : 'No'}
+                          </span>
+                        </td>
+                      )}
                       <td className="py-4 px-6 text-center">
                         {hasIssue ? (
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-bold bg-error/15 text-error border border-error/25" title="Missing details or 0 valuation">
@@ -385,6 +406,38 @@ export default function Workbench({ queue, setQueue, folderPath, setTab }) {
                   className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-4 py-2 text-xs text-on-surface font-mono focus:outline-none focus:border-primary transition-all"
                 />
               </div>
+
+              {/* Billable & Custom Message */}
+              <div className="space-y-4 pt-4 border-t border-[#232d3f]/60">
+                <div className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    id="is_regular"
+                    name="is_regular"
+                    checked={formState.is_regular !== false}
+                    onChange={handleInputChange}
+                    className="rounded border-outline-variant/60 text-primary bg-surface-lowest focus:ring-primary h-4.5 w-4.5 cursor-pointer"
+                  />
+                  <label htmlFor="is_regular" className="text-xs font-bold text-on-surface cursor-pointer select-none">
+                    Is Regular / Billable Client
+                  </label>
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider font-sans">
+                    Custom Email Message (Optional)
+                  </label>
+                  <textarea
+                    name="custom_message"
+                    value={formState.custom_message || ''}
+                    onChange={handleInputChange}
+                    placeholder="Small message to include alongside the invoice..."
+                    rows="2"
+                    className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all"
+                  />
+                </div>
+              </div>
+
 
               {/* Invoice specific info */}
               <div className="space-y-4 pt-4 border-t border-[#232d3f]/60">
