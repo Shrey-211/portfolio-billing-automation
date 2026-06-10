@@ -222,45 +222,54 @@ def apply_ui_overrides_to_excel(excel_path, item):
     import openpyxl
     try:
         wb = openpyxl.load_workbook(excel_path, data_only=False)
-        if "Master File" in wb.sheetnames:
-            ws = wb["Master File"]
-            header_row = 3
-            # Find column mapping
-            cols = {}
-            for col_idx in range(1, ws.max_column + 1):
-                val = ws.cell(row=header_row, column=col_idx).value
-                if val:
-                    cols[str(val).strip().lower().replace(" ", "_")] = col_idx
+        master_sheet = processing.find_master_sheet_name(wb.sheetnames)
+        if master_sheet:
+            ws = wb[master_sheet]
+            header_row, cols = processing.get_master_sheet_mapping(ws)
+            if header_row is None:
+                wb.close()
+                return False
             
             # Find the row for this client
             target_row = None
-            client_name_key = item["client_name"]
+            client_name_key = str(item["client_name"]).strip()
             
-            # Col 3 is Name of client
+            # Find the client name column dynamically
+            col_name_idx = processing.get_mapped_col(cols, ["client_name", "name_of_client"], 3)
+            
             for r in range(header_row + 1, ws.max_row + 1):
-                cell_val = ws.cell(row=r, column=3).value
-                if cell_val and str(cell_val).strip() == client_name_key:
+                cell_val = ws.cell(row=r, column=col_name_idx).value
+                if cell_val and str(cell_val).strip().lower() == client_name_key.lower():
                     target_row = r
                     break
             
             if target_row:
-                # Update cells
+                # Update cells using mapped indices
                 # 1. Valuation
-                if "value" in cols:
-                    ws.cell(row=target_row, column=cols["value"]).value = float(item["valuation"])
+                col_val_idx = processing.get_mapped_col(cols, ["value", "valuation", "value_of_shares", "aum"])
+                if col_val_idx:
+                    ws.cell(row=target_row, column=col_val_idx).value = float(item["valuation"])
+                
                 # 2. Client Address
-                if "address_1" in cols:
-                    ws.cell(row=target_row, column=cols["address_1"]).value = item["address"]
+                col_addr_idx = processing.get_mapped_col(cols, ["address_1", "address"])
+                if col_addr_idx:
+                    ws.cell(row=target_row, column=col_addr_idx).value = item["address"]
+                
                 # 3. Client State
                 state_val = item["state"]
-                if "state" in cols:
-                    ws.cell(row=target_row, column=cols["state"]).value = state_val
+                col_state_idx = processing.get_mapped_col(cols, ["state"])
+                if col_state_idx:
+                    ws.cell(row=target_row, column=col_state_idx).value = state_val
+                
                 # 4. Client Email
-                if "client_email_id" in cols:
-                    ws.cell(row=target_row, column=cols["client_email_id"]).value = item["email"]
+                col_email_idx = processing.get_mapped_col(cols, ["client_email_id", "email"])
+                if col_email_idx:
+                    ws.cell(row=target_row, column=col_email_idx).value = item["email"]
+                
                 # 5. Invoice No
-                if "invoice_no" in cols:
-                    ws.cell(row=target_row, column=cols["invoice_no"]).value = item["invoice_number"]
+                col_inv_idx = processing.get_mapped_col(cols, ["invoice_no", "invoice_number"])
+                if col_inv_idx:
+                    ws.cell(row=target_row, column=col_inv_idx).value = item["invoice_number"]
                 
                 # Update taxable amount and tax formulas dynamically based on settings & state
                 from openpyxl.utils import get_column_letter
@@ -272,38 +281,46 @@ def apply_ui_overrides_to_excel(excel_path, item):
                 sgst_pct = float(settings_db.get("gst_rate_sgst", "9.0"))
                 igst_pct = float(settings_db.get("gst_rate_igst", "18.0"))
                 
+                col_rate_idx = processing.get_mapped_col(cols, ["fee_@", "rate"])
+                col_taxable_idx = processing.get_mapped_col(cols, ["taxable_amt", "taxable_amount"])
+                
                 # Write dynamic Taxable Amount formula
-                if "taxable_amt" in cols and "value" in cols and "fee_@" in cols:
-                    val_let = get_column_letter(cols["value"])
-                    rate_let = get_column_letter(cols["fee_@"])
+                if col_taxable_idx and col_val_idx and col_rate_idx:
+                    val_let = get_column_letter(col_val_idx)
+                    rate_let = get_column_letter(col_rate_idx)
                     
                     excel_formula = formula_template.replace("Value", f"{val_let}{target_row}").replace("Rate", f"{rate_let}{target_row}")
                     if not excel_formula.startswith("="):
                         excel_formula = "=" + excel_formula
                     
-                    ws.cell(row=target_row, column=cols["taxable_amt"]).value = excel_formula
+                    ws.cell(row=target_row, column=col_taxable_idx).value = excel_formula
                 
-                if "taxable_amt" in cols:
-                    tax_let = get_column_letter(cols["taxable_amt"])
+                if col_taxable_idx:
+                    tax_let = get_column_letter(col_taxable_idx)
                     
-                    if "cgst" in cols:
-                        ws.cell(row=target_row, column=cols["cgst"]).value = f"={tax_let}{target_row}*{cgst_pct}%" if is_maharashtra else 0
-                    if "sgst" in cols:
-                        ws.cell(row=target_row, column=cols["sgst"]).value = f"={tax_let}{target_row}*{sgst_pct}%" if is_maharashtra else 0
-                    if "isgt" in cols:
-                        ws.cell(row=target_row, column=cols["isgt"]).value = 0 if is_maharashtra else f"={tax_let}{target_row}*{igst_pct}%"
+                    col_cgst_idx = processing.get_mapped_col(cols, ["cgst"])
+                    col_sgst_idx = processing.get_mapped_col(cols, ["sgst"])
+                    col_igst_idx = processing.get_mapped_col(cols, ["igst", "isgt"])
                     
-                    if "total_inv_amt" in cols:
-                        cgst_let = get_column_letter(cols["cgst"]) if "cgst" in cols else ""
-                        sgst_let = get_column_letter(cols["sgst"]) if "sgst" in cols else ""
-                        isgt_let = get_column_letter(cols["isgt"]) if "isgt" in cols else ""
+                    if col_cgst_idx:
+                        ws.cell(row=target_row, column=col_cgst_idx).value = f"={tax_let}{target_row}*{cgst_pct}%" if is_maharashtra else 0
+                    if col_sgst_idx:
+                        ws.cell(row=target_row, column=col_sgst_idx).value = f"={tax_let}{target_row}*{sgst_pct}%" if is_maharashtra else 0
+                    if col_igst_idx:
+                        ws.cell(row=target_row, column=col_igst_idx).value = 0 if is_maharashtra else f"={tax_let}{target_row}*{igst_pct}%"
+                    
+                    col_total_idx = processing.get_mapped_col(cols, ["total", "total_inv_amt", "total_amount"])
+                    if col_total_idx:
+                        cgst_let = get_column_letter(col_cgst_idx) if col_cgst_idx else ""
+                        sgst_let = get_column_letter(col_sgst_idx) if col_sgst_idx else ""
+                        igst_let = get_column_letter(col_igst_idx) if col_igst_idx else ""
                         
                         formula_parts = [f"{tax_let}{target_row}"]
                         if cgst_let: formula_parts.append(f"{cgst_let}{target_row}")
                         if sgst_let: formula_parts.append(f"{sgst_let}{target_row}")
-                        if isgt_let: formula_parts.append(f"{isgt_let}{target_row}")
+                        if igst_let: formula_parts.append(f"{igst_let}{target_row}")
                         
-                        ws.cell(row=target_row, column=cols["total_inv_amt"]).value = "=" + "+".join(formula_parts)
+                        ws.cell(row=target_row, column=col_total_idx).value = "=" + "+".join(formula_parts)
                 
                 wb.save(excel_path)
                 wb.close()
@@ -317,25 +334,33 @@ def read_calculated_values_from_excel(excel_path, client_name):
     import openpyxl
     try:
         wb = openpyxl.load_workbook(excel_path, data_only=True)
-        if "Master File" in wb.sheetnames:
-            ws = wb["Master File"]
-            header_row = 3
-            cols = {}
-            for col_idx in range(1, ws.max_column + 1):
-                val = ws.cell(row=header_row, column=col_idx).value
-                if val:
-                    cols[str(val).strip().lower().replace(" ", "_")] = col_idx
+        master_sheet = processing.find_master_sheet_name(wb.sheetnames)
+        if master_sheet:
+            ws = wb[master_sheet]
+            header_row, cols = processing.get_master_sheet_mapping(ws)
+            if header_row is None:
+                wb.close()
+                return None
+            
+            col_name_idx = processing.get_mapped_col(cols, ["client_name", "name_of_client"], 3)
             
             for r in range(header_row + 1, ws.max_row + 1):
-                cell_val = ws.cell(row=r, column=3).value
-                if cell_val and str(cell_val).strip() == client_name:
+                cell_val = ws.cell(row=r, column=col_name_idx).value
+                if cell_val and str(cell_val).strip().lower() == str(client_name).strip().lower():
+                    col_taxable_idx = processing.get_mapped_col(cols, ["taxable_amt", "taxable_amount"], 17)
+                    col_cgst_idx = processing.get_mapped_col(cols, ["cgst"], 18)
+                    col_sgst_idx = processing.get_mapped_col(cols, ["sgst"], 19)
+                    col_igst_idx = processing.get_mapped_col(cols, ["igst", "isgt"], 20)
+                    col_total_idx = processing.get_mapped_col(cols, ["total", "total_inv_amt", "total_amount"], 21)
+                    col_inv_idx = processing.get_mapped_col(cols, ["invoice_no", "invoice_number"], 5)
+                    
                     res = {
-                        "fee_amount": ws.cell(row=r, column=cols.get("taxable_amt", 17)).value or 0.0,
-                        "cgst": ws.cell(row=r, column=cols.get("cgst", 18)).value or 0.0,
-                        "sgst": ws.cell(row=r, column=cols.get("sgst", 19)).value or 0.0,
-                        "igst": ws.cell(row=r, column=cols.get("isgt", 20)).value or 0.0, # isgt typo
-                        "total_amount": ws.cell(row=r, column=cols.get("total_inv_amt", 21)).value or 0.0,
-                        "invoice_number": ws.cell(row=r, column=cols.get("invoice_no", 5)).value or ""
+                        "fee_amount": ws.cell(row=r, column=col_taxable_idx).value or 0.0,
+                        "cgst": ws.cell(row=r, column=col_cgst_idx).value or 0.0,
+                        "sgst": ws.cell(row=r, column=col_sgst_idx).value or 0.0,
+                        "igst": ws.cell(row=r, column=col_igst_idx).value or 0.0,
+                        "total_amount": ws.cell(row=r, column=col_total_idx).value or 0.0,
+                        "invoice_number": ws.cell(row=r, column=col_inv_idx).value or ""
                     }
                     wb.close()
                     return res

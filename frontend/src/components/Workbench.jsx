@@ -22,6 +22,14 @@ const INDIAN_STATES = [
   "Uttarakhand", "West Bengal", "Delhi"
 ];
 
+const getValidationErrors = (item) => {
+  const errors = [];
+  if (!item.client_name) errors.push("Client Name is missing");
+  if (!item.email) errors.push("Recipient Email is missing");
+  if (!item.valuation || item.valuation <= 0) errors.push("Portfolio Valuation must be greater than 0");
+  return errors;
+};
+
 export default function Workbench({ queue, setQueue, folderPath, setTab, importMode }) {
   const [selectedIdx, setSelectedIdx] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -184,10 +192,10 @@ export default function Workbench({ queue, setQueue, folderPath, setTab, importM
         </div>
 
         {queue.length > 0 ? (
-          <div className="overflow-x-auto">
+          <div className="overflow-auto max-h-[600px] scrollbar-thin">
             <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-surface-lowest/70 border-b border-[#232d3f]/40">
+              <thead className="sticky top-0 z-20 bg-surface-lowest/95 backdrop-blur-md">
+                <tr className="border-b border-[#232d3f]/40">
                   <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">File Name</th>
                   <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Client Name</th>
                   <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Type</th>
@@ -227,7 +235,14 @@ export default function Workbench({ queue, setQueue, folderPath, setTab, importM
                       )}
                       <td className="py-4 px-6 text-center">
                         {hasIssue ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-bold bg-error/15 text-error border border-error/25" title="Missing details or 0 valuation">
+                          <span 
+                            onClick={() => {
+                              const errs = getValidationErrors(item);
+                              alert(`Validation Issues for ${item.client_name || 'Unnamed Client'}:\n\n${errs.map(e => `• ${e}`).join('\n')}`);
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-bold bg-error/15 text-error border border-error/25 cursor-pointer hover:bg-error/25 transition-all" 
+                            title="Click to view details"
+                          >
                             <AlertTriangle className="h-3 w-3" />
                             Needs Review
                           </span>
@@ -278,7 +293,7 @@ export default function Workbench({ queue, setQueue, folderPath, setTab, importM
             onClick={handleCloseDrawer}
           />
           
-          <div className="relative w-full max-w-lg bg-[#10131a] glass-panel border-l border-outline-variant/20 shadow-2xl h-full flex flex-col z-50">
+          <div className="relative w-full max-w-lg bg-surface border-l border-outline-variant/30 shadow-2xl h-full flex flex-col z-50">
             {/* Header */}
             <div className="px-6 py-5 border-b border-[#232d3f]/60 flex items-center justify-between bg-surface-lowest/40">
               <div>

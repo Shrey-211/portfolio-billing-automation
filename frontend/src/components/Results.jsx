@@ -364,6 +364,27 @@ export default function Results({ batchId, setBatchId }) {
     }
   };
 
+  // Send email for a single invoice row
+  const handleSendSingleEmail = async (itemId) => {
+    const confirmSend = window.confirm(`Send email for this invoice?`);
+    if (!confirmSend) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/email/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item_ids: [itemId] })
+      });
+      if (res.ok) {
+        setEmailProgressOpen(true);
+        startPollingEmailProgress();
+      } else {
+        alert("Email trigger failed: " + await res.text());
+      }
+    } catch (err) {
+      console.error("Single email delivery failed", err);
+    }
+  };
+
   const startPollingEmailProgress = () => {
     if (emailPollInterval.current) clearInterval(emailPollInterval.current);
     pollEmailProgress();
@@ -496,10 +517,10 @@ export default function Results({ batchId, setBatchId }) {
             <p className="text-xs text-on-surface-variant mt-3">Fetching batch results...</p>
           </div>
         ) : items.length > 0 ? (
-          <div className="overflow-x-auto">
+          <div className="overflow-auto max-h-[600px] scrollbar-thin">
             <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-surface-lowest/70 border-b border-[#232d3f]/40">
+              <thead className="sticky top-0 z-20 bg-surface-lowest/95 backdrop-blur-md">
+                <tr className="border-b border-[#232d3f]/40">
                   <th scope="col" className="py-3 px-6 text-left w-10">
                     <input
                       type="checkbox"
@@ -559,7 +580,6 @@ export default function Results({ batchId, setBatchId }) {
                               <span>{item.client_name}</span>
                               <span className="block text-[10px] text-on-surface-variant font-mono mt-0.5">{item.filename}</span>
                             </div>
-                            <Edit3 className="h-3.5 w-3.5 text-on-surface-variant/0 group-hover:text-on-surface-variant/70 transition-all ml-2 flex-shrink-0" />
                           </div>
                         )}
                       </td>
@@ -582,7 +602,6 @@ export default function Results({ batchId, setBatchId }) {
                         ) : (
                           <div className="flex items-center justify-between gap-1.5">
                             <span>₹{item.valuation.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
-                            <Edit3 className="h-3.5 w-3.5 text-on-surface-variant/0 group-hover:text-on-surface-variant/70 transition-all ml-2 flex-shrink-0" />
                           </div>
                         )}
                       </td>
@@ -679,6 +698,15 @@ export default function Results({ batchId, setBatchId }) {
                           <Edit3 className="h-3 w-3" />
                           Edit
                         </button>
+                        {isSuccess && (item.email_status === 'Pending' || item.email_status.startsWith('Failed')) && (
+                          <button
+                            onClick={() => handleSendSingleEmail(item.id)}
+                            className="inline-flex items-center gap-1 text-[10px] text-primary hover:text-primary-container font-semibold border border-outline-variant/30 bg-surface-lowest hover:bg-surface-container-high px-2.5 py-1 rounded transition-colors cursor-pointer ml-1"
+                          >
+                            <Mail className="h-3 w-3" />
+                            Email
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );
@@ -785,7 +813,7 @@ export default function Results({ batchId, setBatchId }) {
             onClick={() => !editLoading && setDrawerOpen(false)}
           />
           
-          <div className="relative w-full max-w-lg bg-[#10131a] glass-panel border-l border-outline-variant/20 shadow-2xl h-full flex flex-col z-50">
+          <div className="relative w-full max-w-lg bg-surface border-l border-outline-variant/30 shadow-2xl h-full flex flex-col z-50">
             {/* Header */}
             <div className="px-6 py-5 border-b border-[#232d3f]/60 flex items-center justify-between bg-surface-lowest/40">
               <div>

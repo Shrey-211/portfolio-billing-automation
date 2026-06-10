@@ -25,6 +25,7 @@ export default function Home({ setTab, setQueue, setFolderPath, folderPath, queu
   });
   const [error, setError] = useState('');
 
+
   useEffect(() => {
     fetchRecentBatches();
   }, []);
@@ -242,11 +243,11 @@ export default function Home({ setTab, setQueue, setFolderPath, folderPath, queu
             </button>
           </div>
           
-          <div className="overflow-x-auto flex-1">
+          <div className="overflow-auto max-h-[400px] scrollbar-thin flex-1">
             {recentBatches.length > 0 ? (
               <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-surface-lowest/70 border-b border-[#232d3f]/40">
+                <thead className="sticky top-0 z-20 bg-surface-lowest/95 backdrop-blur-md">
+                  <tr className="border-b border-[#232d3f]/40">
                     <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Batch ID</th>
                     <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Date & Time</th>
                     <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Status</th>

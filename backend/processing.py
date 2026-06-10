@@ -686,6 +686,107 @@ def clean_label_val(val, prefix):
     cleaned = re.sub(r'^[:\-\s]+', '', cleaned).strip()
     return cleaned
 
+def find_master_sheet_name(sheetnames):
+    priority = ["master file", "main sheet123", "main sheet", "masterdata"]
+    for p in priority:
+        for sname in sheetnames:
+            if sname.strip().lower() == p:
+                return sname
+    for keyword in ["master", "main"]:
+        for sname in sheetnames:
+            if keyword in sname.lower():
+                return sname
+    return None
+
+def get_master_sheet_mapping(ws):
+    header_row = None
+    cols = {}
+    for r in range(1, 11):
+        row_vals = [ws.cell(row=r, column=c).value for c in range(1, min(25, ws.max_column + 1))]
+        normalized_vals = [str(v).strip().lower() if v is not None else "" for v in row_vals]
+        if any(h in normalized_vals for h in ["client name", "name of client", "client_name", "name_of_client"]):
+            header_row = r
+            for col_idx, val in enumerate(row_vals, 1):
+                if val:
+                    normalized_h = str(val).strip().lower().replace(" ", "_")
+                    cols[normalized_h] = col_idx
+            break
+    return header_row, cols
+
+def get_mapped_col(cols_mapping, keys_list, fallback_idx=None):
+    for k in keys_list:
+        if k in cols_mapping:
+            return cols_mapping[k]
+    for k in keys_list:
+        for mk in cols_mapping:
+            if mk.startswith(k) or k in mk:
+                return cols_mapping[mk]
+    return fallback_idx
+
+def parse_company_and_bank_details(ws_inv):
+    company_details = {}
+    company_details["company_name"] = str(ws_inv.cell(row=2, column=4).value or ws_inv.cell(row=1, column=4).value or "Cedrus Consultants Pvt Ltd").strip()
+    company_details["company_division"] = str(ws_inv.cell(row=3, column=4).value or "").strip()
+    company_details["company_address"] = str(ws_inv.cell(row=4, column=4).value or "").strip()
+    
+    for r in range(1, 16):
+        for c in [4, 2]:
+            val = ws_inv.cell(row=r, column=c).value
+            if val:
+                val_str = str(val)
+                if "mobile" in val_str.lower() or "phone" in val_str.lower():
+                    company_details["company_phone"] = clean_label_val(val, "Mobile Number")
+                elif "pan" in val_str.lower():
+                    company_details["company_pan"] = clean_label_val(val, "Pan Number")
+                elif "gstin" in val_str.lower() or "gst" in val_str.lower():
+                    company_details["company_gstin"] = clean_label_val(val, "GSTIN")
+
+    if "company_phone" not in company_details: company_details["company_phone"] = ""
+    if "company_pan" not in company_details: company_details["company_pan"] = ""
+    if "company_gstin" not in company_details: company_details["company_gstin"] = ""
+
+    for r in range(25, min(46, ws_inv.max_row + 1)):
+        val = ws_inv.cell(row=r, column=2).value
+        if val:
+            val_str = str(val).lower()
+            if "account name" in val_str or "acc name" in val_str:
+                company_details["company_bank_account_name"] = clean_label_val(val, "Account Name")
+            elif "bank account details" in val_str or "bank details" in val_str or "bank name" in val_str:
+                company_details["company_bank_name"] = clean_label_val(val, "Bank Account Details")
+                if not company_details["company_bank_name"]:
+                    company_details["company_bank_name"] = clean_label_val(val, "Bank Details")
+            elif "branch" in val_str:
+                company_details["company_bank_branch"] = clean_label_val(val, "Bank Branch Address")
+            elif "account type" in val_str or "acc type" in val_str:
+                company_details["company_bank_account_type"] = clean_label_val(val, "Account Type")
+            elif "account number" in val_str or "acc number" in val_str or "acc no" in val_str or "account no" in val_str:
+                company_details["company_bank_account"] = clean_label_val(val, "Account Number")
+            elif "ifsc" in val_str:
+                company_details["company_bank_ifsc"] = clean_label_val(val, "IFSC Code")
+                
+        for c in [8, 7]:
+            sig_val = ws_inv.cell(row=r, column=c).value
+            if sig_val:
+                sig_str = str(sig_val).strip()
+                if sig_str.lower() in ["authorized signatory", "authorised signatory"]:
+                    company_details["authorized_signatory_title"] = sig_str
+                    for offset in [1, -1]:
+                        name_val = ws_inv.cell(row=r + offset, column=c).value
+                        if name_val and str(name_val).strip() and "signatory" not in str(name_val).lower():
+                            company_details["authorized_signatory"] = str(name_val).strip()
+                            break
+
+    if "company_bank_account_name" not in company_details: company_details["company_bank_account_name"] = ""
+    if "company_bank_name" not in company_details: company_details["company_bank_name"] = ""
+    if "company_bank_branch" not in company_details: company_details["company_bank_branch"] = ""
+    if "company_bank_account_type" not in company_details: company_details["company_bank_account_type"] = ""
+    if "company_bank_account" not in company_details: company_details["company_bank_account"] = ""
+    if "company_bank_ifsc" not in company_details: company_details["company_bank_ifsc"] = ""
+    if "authorized_signatory" not in company_details: company_details["authorized_signatory"] = ""
+    if "authorized_signatory_title" not in company_details: company_details["authorized_signatory_title"] = "Authorized Signatory"
+
+    return company_details
+
 def get_best_sheet_match(client_name, sheet_names):
     import re
     import difflib
@@ -699,11 +800,10 @@ def get_best_sheet_match(client_name, sheet_names):
     
     for sname in sheet_names:
         sname_lower = sname.lower().strip()
-        if sname_lower in ('master file', 'sheet1', 'invoice', 'invoice making mircro', 'new latest', 'sheet2'):
+        if sname_lower in ('master file', 'main sheet123', 'main sheet', 'masterdata', 'sheet1', 'invoice', 'invoice making mircro', 'new latest', 'sheet2', 'make invoice', 'update'):
             continue
         
         s_clean = re.sub(r'[^a-zA-Z0-9\s]', '', sname_lower)
-        # remove leading numbers or codes
         s_clean = re.sub(r'^\d+\s+', '', s_clean).strip()
         s_clean = re.sub(r'^va\d*\s+', '', s_clean).strip()
         
@@ -711,12 +811,10 @@ def get_best_sheet_match(client_name, sheet_names):
         if not s_words:
             continue
             
-        # Ensure first name matches closely with at least one word in sheet name
         first_word_matches = difflib.get_close_matches(c_words[0], s_words, n=1, cutoff=0.8)
         if not first_word_matches:
             continue
             
-        # Calculate overlap score via fuzzy matching of words
         fuzzy_matches = 0
         for cw in c_words:
             matches = difflib.get_close_matches(cw, s_words, n=1, cutoff=0.8)
@@ -724,7 +822,6 @@ def get_best_sheet_match(client_name, sheet_names):
                 fuzzy_matches += 1
         score = fuzzy_matches
         
-        # also check substring match
         c_joined = "".join(c_words)
         s_joined = "".join(s_words)
         if c_joined == s_joined:
@@ -739,10 +836,6 @@ def get_best_sheet_match(client_name, sheet_names):
     return best_match
 
 def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path):
-    """
-    Automates Microsoft Excel on Windows via COM to write the client_key to B13
-    of sheet 'Invoice', recalculate all formulas, and export the sheet as PDF.
-    """
     if not EXCEL_AVAILABLE:
         raise RuntimeError("Microsoft Excel is not installed or pywin32 is not configured.")
         
@@ -766,14 +859,8 @@ def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path):
         
         ws = wb.Sheets("Invoice")
         ws.Range("B13").Value = client_key
-        
-        # Calculate
         ws.Calculate()
-        
-        # Save workbook changes so openpyxl data_only reads recalculated values
         wb.Save()
-        
-        # Export sheet Invoice as PDF
         ws.ExportAsFixedFormat(0, abs_pdf)
         wb.Close(False)
         return True
@@ -795,8 +882,8 @@ def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path):
 
 def parse_single_excel_sheet(excel_path):
     """
-    Redesigned to support parsing the CCPL Master Sheet format.
-    Returns (company_details, clients) where company_details may be None if not CCPL.
+    Redesigned to dynamically parse master sheets like CCPL and Cedrus Finance.
+    Returns (company_details, clients) where company_details may be None.
     """
     try:
         wb = openpyxl.load_workbook(excel_path, data_only=True)
@@ -804,76 +891,104 @@ def parse_single_excel_sheet(excel_path):
         print(f"Error loading single Excel file {excel_path}: {e}")
         return None, []
 
-    # If it is a CCPL master sheet
-    if "Master File" in wb.sheetnames:
-        # 1. Parse Company & Bank details from Invoice sheet
+    master_sheet = find_master_sheet_name(wb.sheetnames)
+    if master_sheet:
         company_details = {}
         if "Invoice" in wb.sheetnames:
             ws_inv = wb["Invoice"]
-            company_details["company_name"] = str(ws_inv.cell(row=1, column=4).value or "Cedrus Consultants Pvt Ltd").strip()
-            company_details["company_division"] = str(ws_inv.cell(row=3, column=4).value or "").strip()
-            company_details["company_address"] = str(ws_inv.cell(row=4, column=4).value or "").strip()
-            
-            company_details["company_phone"] = clean_label_val(ws_inv.cell(row=6, column=4).value, "Mobile Number")
-            company_details["company_pan"] = clean_label_val(ws_inv.cell(row=7, column=4).value, "Pan Number")
-            company_details["company_gstin"] = clean_label_val(ws_inv.cell(row=8, column=4).value, "GSTIN")
-            
-            company_details["company_bank_name"] = clean_label_val(ws_inv.cell(row=35, column=2).value, "Bank Account Details")
-            company_details["company_bank_branch"] = clean_label_val(ws_inv.cell(row=36, column=2).value, "Bank Branch Address")
-            company_details["company_bank_account_name"] = clean_label_val(ws_inv.cell(row=37, column=2).value, "Account Name")
-            company_details["company_bank_account_type"] = clean_label_val(ws_inv.cell(row=38, column=2).value, "Account Type")
-            company_details["company_bank_account"] = clean_label_val(ws_inv.cell(row=39, column=2).value, "Account Number")
-            company_details["company_bank_ifsc"] = clean_label_val(ws_inv.cell(row=40, column=2).value, "IFSC Code")
-            
-            company_details["authorized_signatory"] = str(ws_inv.cell(row=37, column=8).value or "").strip()
-            company_details["authorized_signatory_title"] = str(ws_inv.cell(row=36, column=8).value or "").strip()
+            company_details = parse_company_and_bank_details(ws_inv)
         
-        # 2. Parse client records from Master File
         clients = []
-        ws_master = wb["Master File"]
-        header_row = 3
-        headers = []
-        for c in range(1, ws_master.max_column + 1):
-            val = ws_master.cell(row=header_row, column=c).value
-            headers.append(str(val).strip().lower().replace(" ", "_") if val else f"col_{c}")
+        ws_master = wb[master_sheet]
+        header_row, cols = get_master_sheet_mapping(ws_master)
         
+        if header_row is None:
+            wb.close()
+            return None, []
+            
+        col_name = get_mapped_col(cols, ["client_name", "name_of_client"], 3)
+        col_email = get_mapped_col(cols, ["client_email_id", "email_id", "email"], 9)
+        col_invoice = get_mapped_col(cols, ["invoice_no", "invoice_number"], 5)
+        col_rate = get_mapped_col(cols, ["fee_@", "rate"], 4)
+        col_address = get_mapped_col(cols, ["address_1", "address"], 6)
+        col_state = get_mapped_col(cols, ["state"], 7)
+        col_particulars = get_mapped_col(cols, ["particular", "particulars"], 13)
+        col_start = get_mapped_col(cols, ["from", "period_start"], 14)
+        col_end = get_mapped_col(cols, ["to", "period_end"], 15)
+        col_valuation = get_mapped_col(cols, ["value", "valuation", "value_of_shares", "aum"], 11)
+        col_taxable = get_mapped_col(cols, ["taxable_amt", "taxable_amount"], 17)
+        col_cgst = get_mapped_col(cols, ["cgst"], 18)
+        col_sgst = get_mapped_col(cols, ["sgst"], 19)
+        col_igst = get_mapped_col(cols, ["igst", "isgt"], 20)
+        col_total = get_mapped_col(cols, ["total", "total_inv_amt", "total_amount"], 21)
+
         for r in range(header_row + 1, ws_master.max_row + 1):
-            client_name = ws_master.cell(row=r, column=3).value
+            client_name = ws_master.cell(row=r, column=col_name).value
             if not client_name:
                 continue
             
-            # Map columns
-            row_dict = {}
-            for col_idx, h in enumerate(headers):
-                row_dict[h] = ws_master.cell(row=r, column=col_idx + 1).value
+            email = str(ws_master.cell(row=r, column=col_email).value or "").strip()
+            invoice_no = str(ws_master.cell(row=r, column=col_invoice).value or "").strip()
             
-            email = str(row_dict.get("client_email_id") or "").strip()
-            invoice_no = str(row_dict.get("invoice_no") or "").strip()
-            rate = row_dict.get("fee_@") or 0.0
-            address = str(row_dict.get("address_1") or "").strip()
-            state = str(row_dict.get("state") or "").strip()
-            particulars = str(row_dict.get("particular") or "").strip()
+            rate_val = ws_master.cell(row=r, column=col_rate).value
+            try:
+                rate = float(rate_val) if rate_val is not None else 0.0
+            except (ValueError, TypeError):
+                rate = 0.0
+                
+            address = str(ws_master.cell(row=r, column=col_address).value or "").strip()
+            state = str(ws_master.cell(row=r, column=col_state).value or "").strip()
+            particulars = str(ws_master.cell(row=r, column=col_particulars).value or "").strip()
             
-            val_n = ws_master.cell(row=r, column=14).value
-            val_o = ws_master.cell(row=r, column=15).value
+            val_start = ws_master.cell(row=r, column=col_start).value
+            val_end = ws_master.cell(row=r, column=col_end).value
             
-            valuation = row_dict.get("value") or 0.0
-            taxable_amount = row_dict.get("taxable_amt") or 0.0
-            cgst = row_dict.get("cgst") or 0.0
-            sgst = row_dict.get("sgst") or 0.0
-            igst = row_dict.get("isgt") or 0.0
-            total_amount = row_dict.get("total_inv_amt") or 0.0
-            
+            try:
+                valuation_val = ws_master.cell(row=r, column=col_valuation).value
+                valuation = float(valuation_val) if valuation_val is not None else 0.0
+            except (ValueError, TypeError):
+                valuation = 0.0
+                
+            try:
+                taxable_val = ws_master.cell(row=r, column=col_taxable).value
+                taxable_amount = float(taxable_val) if taxable_val is not None else 0.0
+            except (ValueError, TypeError):
+                taxable_amount = 0.0
+                
+            try:
+                cgst_val = ws_master.cell(row=r, column=col_cgst).value
+                cgst = float(cgst_val) if cgst_val is not None else 0.0
+            except (ValueError, TypeError):
+                cgst = 0.0
+                
+            try:
+                sgst_val = ws_master.cell(row=r, column=col_sgst).value
+                sgst = float(sgst_val) if sgst_val is not None else 0.0
+            except (ValueError, TypeError):
+                sgst = 0.0
+                
+            try:
+                igst_val = ws_master.cell(row=r, column=col_igst).value
+                igst = float(igst_val) if igst_val is not None else 0.0
+            except (ValueError, TypeError):
+                igst = 0.0
+                
+            try:
+                total_val = ws_master.cell(row=r, column=col_total).value
+                total_amount = float(total_val) if total_val is not None else 0.0
+            except (ValueError, TypeError):
+                total_amount = 0.0
+                
             if "#value" in state.lower() or not state:
                 if igst > 0:
                     state = "Out of State"
                 else:
                     state = "Maharashtra"
             
-            matched_sheet = get_best_sheet_match(client_name, wb.sheetnames)
+            matched_sheet = get_best_sheet_match(str(client_name), wb.sheetnames)
             
             clients.append({
-                "client_name": client_name,
+                "client_name": str(client_name).strip(),
                 "client_type": "Type 1",
                 "state": state,
                 "email": email,
@@ -894,8 +1009,8 @@ def parse_single_excel_sheet(excel_path):
                 "invoice_number": invoice_no,
                 "rate": rate,
                 "particulars": particulars,
-                "period_start": str(val_n) if val_n else "",
-                "period_end": str(val_o) if val_o else ""
+                "period_start": str(val_start) if val_start else "",
+                "period_end": str(val_end) if val_end else ""
             })
             
         wb.close()

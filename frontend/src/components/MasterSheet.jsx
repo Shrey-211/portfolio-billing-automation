@@ -14,7 +14,9 @@ import {
   Layers,
   Edit3,
   ChevronUp,
-  ChevronDown
+  ChevronDown,
+  FileText,
+  Mail
 } from 'lucide-react';
 
 export default function MasterSheet({ folderPath }) {
@@ -156,6 +158,24 @@ export default function MasterSheet({ folderPath }) {
     }
   };
 
+  const handleOpenPDF = async (pdfPath) => {
+    if (!pdfPath) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/pdf/open`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: pdfPath })
+      });
+      if (!res.ok) {
+        const errTxt = await res.text();
+        showFeedback("Failed to open PDF: " + errTxt, "error");
+      }
+    } catch (err) {
+      console.error("Error opening PDF:", err);
+      showFeedback("Error opening PDF: " + err.message, "error");
+    }
+  };
+
   const showFeedback = (text, type = 'success') => {
     setFeedbackMsg({ text, type });
     setTimeout(() => {
@@ -220,6 +240,27 @@ export default function MasterSheet({ folderPath }) {
     } catch (err) {
       console.error("Payment reset failed:", err);
       showFeedback("Error reaching server.", "error");
+    }
+  };
+
+  const handleSendSingleEmail = async (itemId) => {
+    const confirmSend = window.confirm("Send email for this invoice?");
+    if (!confirmSend) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/email/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item_ids: [itemId] })
+      });
+      if (res.ok) {
+        showFeedback("Email dispatch triggered successfully.");
+        fetchInvoices();
+      } else {
+        showFeedback("Failed to trigger email: " + await res.text(), "error");
+      }
+    } catch (err) {
+      console.error("Error sending email:", err);
+      showFeedback("Error sending email: " + err.message, "error");
     }
   };
 
@@ -431,16 +472,17 @@ export default function MasterSheet({ folderPath }) {
             <p className="text-xs text-on-surface-variant mt-3 font-medium">Loading ledger logs...</p>
           </div>
         ) : sortedInvoices.length > 0 ? (
-          <div className="overflow-x-auto">
+          <div className="overflow-auto max-h-[600px] scrollbar-thin">
             <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-surface-lowest/70 border-b border-[#232d3f]/40">
+              <thead className="sticky top-0 z-20 bg-surface-lowest/95 backdrop-blur-md">
+                <tr className="border-b border-[#232d3f]/40">
                   {renderSortableHeader('id', 'Inv ID', 'w-20 min-w-[80px]')}
                   {renderSortableHeader('client_name', 'Client Name', 'min-w-[240px]')}
                   {renderSortableHeader('valuation', 'Valuation', 'min-w-[160px]')}
                   {renderSortableHeader('fee_amount', 'Fee (INR)', 'min-w-[140px]')}
                   {renderSortableHeader('total_amount', 'Total + GST', 'min-w-[140px]')}
                   {renderSortableHeader('status', 'Billing', 'text-center min-w-[120px]')}
+                  <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider text-center min-w-[150px]">Documents</th>
                   {renderSortableHeader('email_status', 'Email Dispatch', 'min-w-[160px]')}
                   {renderSortableHeader('is_paid', 'Payment Status', 'text-center min-w-[160px]')}
                   <th scope="col" className="py-3 px-6 text-[10px] font-bold text-on-surface-variant uppercase tracking-wider text-center min-w-[180px]">Actions</th>
@@ -475,7 +517,6 @@ export default function MasterSheet({ folderPath }) {
                                 {inv.filename ? inv.filename.split('\\').pop() : '-'}
                               </span>
                             </div>
-                            <Edit3 className="h-3.5 w-3.5 text-on-surface-variant/0 group-hover:text-on-surface-variant/70 transition-all ml-2 flex-shrink-0" />
                           </div>
                         )}
                       </td>
@@ -498,7 +539,6 @@ export default function MasterSheet({ folderPath }) {
                         ) : (
                           <div className="flex items-center justify-between gap-1.5">
                             <span>₹{inv.valuation.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
-                            <Edit3 className="h-3.5 w-3.5 text-on-surface-variant/0 group-hover:text-on-surface-variant/70 transition-all ml-2 flex-shrink-0" />
                           </div>
                         )}
                       </td>
@@ -527,14 +567,52 @@ export default function MasterSheet({ folderPath }) {
                           </span>
                         )}
                       </td>
+                      <td className="py-4 px-6 text-center">
+                        {inv.status === 'Completed' && inv.invoice_pdf_path ? (
+                          <div className="flex flex-col sm:flex-row items-center justify-center gap-2">
+                            <button
+                              onClick={() => handleOpenPDF(inv.invoice_pdf_path)}
+                              className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-bold bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 hover:border-primary/35 transition-all cursor-pointer"
+                              title="View Invoice PDF"
+                            >
+                              <FileText className="h-3 w-3" />
+                              <span>Invoice</span>
+                            </button>
+                            {inv.portfolio_pdf_path && (
+                              <button
+                                onClick={() => handleOpenPDF(inv.portfolio_pdf_path)}
+                                className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-bold bg-secondary/10 text-secondary border border-secondary/20 hover:bg-secondary/20 hover:border-secondary/35 transition-all cursor-pointer"
+                                title="View Portfolio PDF"
+                              >
+                                <ArrowUpRight className="h-3 w-3" />
+                                <span>Portfolio</span>
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-on-surface-variant/30 font-mono text-[10px]">-</span>
+                        )}
+                      </td>
                       <td className="py-4 px-6 font-semibold">
-                        <span className={`inline-flex items-center gap-1 ${
-                          inv.email_status === 'Sent' ? 'text-secondary' :
-                          inv.email_status.startsWith('Failed') ? 'text-error' :
-                          inv.email_status === 'Skipped' ? 'text-on-surface-variant/50' : 'text-on-surface-variant'
-                        }`}>
-                          {inv.email_status}
-                        </span>
+                        <div className="flex flex-col gap-1.5 items-start">
+                          <span className={`inline-flex items-center gap-1 ${
+                            inv.email_status === 'Sent' ? 'text-secondary' :
+                            inv.email_status.startsWith('Failed') ? 'text-error' :
+                            inv.email_status === 'Skipped' ? 'text-on-surface-variant/50' : 'text-on-surface-variant'
+                          }`}>
+                            {inv.email_status}
+                          </span>
+                          {inv.email_status === 'Pending' && inv.status === 'Completed' && (
+                            <button
+                              onClick={() => handleSendSingleEmail(inv.id)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 hover:border-primary/35 transition-all cursor-pointer"
+                              title="Send Invoice & Report via Email"
+                            >
+                              <Mail className="h-3.5 w-3.5" />
+                              <span>Send Email</span>
+                            </button>
+                          )}
+                        </div>
                         {hasCustomMsg && (
                           <span className="block text-[8px] text-primary/70 font-sans tracking-wide mt-0.5 uppercase">Has Custom Note</span>
                         )}
