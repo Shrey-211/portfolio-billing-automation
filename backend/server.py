@@ -100,6 +100,17 @@ class BatchProcessRequest(BaseModel):
 class EmailSendRequest(BaseModel):
     item_ids: List[int]
 
+class CustomEmailRequest(BaseModel):
+    client_name: str
+    recipient: str
+    cc: Optional[str] = ""
+    subject: str
+    body: str
+    attachments: List[str]
+    email_type: str = "custom"
+    item_id: Optional[int] = None
+
+
 def log_progress(msg: str, log_type: str = "info"):
     timestamp = datetime.now().strftime("%H:%M:%S")
     PROGRESS_STATE["logs"].append({
@@ -139,6 +150,51 @@ def update_client_profile(payload: ClientUpdate):
     try:
         database.save_client(payload.model_dump())
         return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/clients/all")
+def get_all_clients_with_stats():
+    try:
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT 
+            COALESCE(c.id, -1) as id,
+            COALESCE(c.client_name, j.client_name) as client_name,
+            COALESCE(c.client_type, 'Type 1') as client_type,
+            COALESCE(c.state, 'Maharashtra') as state,
+            COALESCE(c.email, '') as email,
+            COALESCE(c.cc_email, '') as cc_email,
+            COALESCE(c.address, '') as address,
+            COALESCE(c.gstin, '') as gstin,
+            COUNT(j.id) as invoice_count,
+            MAX(b.timestamp) as latest_activity
+        FROM job_items j
+        LEFT JOIN clients c ON j.client_name = c.client_name
+        LEFT JOIN batches b ON j.batch_id = b.id
+        GROUP BY j.client_name
+
+        UNION
+
+        SELECT 
+            c.id,
+            c.client_name,
+            c.client_type,
+            c.state,
+            c.email,
+            c.cc_email,
+            c.address,
+            c.gstin,
+            0 as invoice_count,
+            NULL as latest_activity
+        FROM clients c
+        WHERE c.client_name NOT IN (SELECT DISTINCT client_name FROM job_items)
+        ORDER BY client_name ASC
+        """)
+        clients_list = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return clients_list
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -429,218 +485,293 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
             log_progress(f"Failed to copy master sheet: {copy_err}", "error")
             master_xlsx_copy = first_item_filename
     
-    for idx, item in enumerate(items):
-        if not PROGRESS_STATE["running"]:
-            log_progress("Batch run cancelled by user.", "warning")
-            if batch_id > 0:
-                database.update_batch(batch_id, completed, failed, "Cancelled")
-            return
+    # Spawn a single reusable Excel COM instance for Option A
+    excel_app = None
+    if processing.EXCEL_AVAILABLE:
+        try:
+            import pythoncom
+            import win32com.client
+            pythoncom.CoInitialize()
+            excel_app = win32com.client.DispatchEx("Excel.Application")
+            excel_app.Visible = False
+            excel_app.DisplayAlerts = False
+            excel_app.AskToUpdateLinks = False
+            log_progress("Spawned reusable background Microsoft Excel instance for batch processing.", "info")
+        except Exception as spawn_err:
+            log_progress(f"Failed to spawn reusable Excel COM instance: {spawn_err}. Will fallback to spawning per-file.", "warning")
+            excel_app = None
+
+    try:
+        for idx, item in enumerate(items):
+            if not PROGRESS_STATE["running"]:
+                log_progress("Batch run cancelled by user.", "warning")
+                if batch_id > 0:
+                    database.update_batch(batch_id, completed, failed, "Cancelled")
+                return
+                
+            filename_full = item["filename"]
+            client_name = item["client_name"]
+            filename_base = os.path.basename(filename_full)
+            is_regular = item.get("is_regular", True)
+            custom_message = item.get("custom_message", "")
             
-        filename_full = item["filename"]
-        client_name = item["client_name"]
-        filename_base = os.path.basename(filename_full)
-        is_regular = item.get("is_regular", True)
-        custom_message = item.get("custom_message", "")
-        
-        PROGRESS_STATE["active_file"] = f"{client_name} ({filename_base})"
-        
-        if import_mode == "sheet" and not is_regular:
-            log_progress(f"[{idx+1}/{total}] Skipping non-billable client: {client_name}", "info")
+            PROGRESS_STATE["active_file"] = f"{client_name} ({filename_base})"
+            
+            if import_mode == "sheet" and not is_regular:
+                log_progress(f"[{idx+1}/{total}] Skipping non-billable client: {client_name}", "info")
+                if batch_id > 0:
+                    try:
+                        db_item = {
+                            "batch_id": batch_id,
+                            "filename": filename_base,
+                            "client_name": client_name,
+                            "valuation": item["valuation"],
+                            "fee_amount": 0.0,
+                            "cgst": 0.0,
+                            "sgst": 0.0,
+                            "igst": 0.0,
+                            "total_amount": 0.0,
+                            "status": "Skipped (Not Billable)",
+                            "error_msg": "",
+                            "portfolio_pdf_path": "",
+                            "invoice_pdf_path": "",
+                            "email_status": "Skipped",
+                            "custom_message": custom_message
+                        }
+                        database.add_job_item(db_item)
+                        try:
+                            database.save_client({
+                                "client_name": client_name,
+                                "client_type": item.get("client_type", "Type 1"),
+                                "state": item.get("state", "Maharashtra"),
+                                "email": item.get("email", ""),
+                                "cc_email": item.get("cc_email", ""),
+                                "address": item.get("address", ""),
+                                "gstin": item.get("gstin", "")
+                            })
+                        except Exception as db_cl_ex:
+                            log_progress(f"Database client registry logging error: {db_cl_ex}", "error")
+                    except Exception as db_ex:
+                        log_progress(f"Database logging error: {db_ex}", "error")
+                completed += 1
+                PROGRESS_STATE["completed"] = completed
+                continue
+                
+            log_progress(f"[{idx+1}/{total}] Processing client: {client_name}", "info")
+            
+            safe_client_name = "".join([c for c in client_name if c.isalnum() or c in (" ", "_", "-")]).strip().replace(" ", "_")
+            flat_excel_path = os.path.join(static_xlsx_dir, f"{safe_client_name}_Processed.xlsx")
+            
+            matched_sheet = item.get("matched_sheet")
+            portfolio_excel_source = processing.find_portfolio_file_in_folder(folder_path, client_name)
+            portfolio_pdf_path = ""
+            if portfolio_excel_source:
+                portfolio_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Portfolio.pdf")
+            elif import_mode == "sheet":
+                if matched_sheet:
+                    portfolio_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Portfolio.pdf")
+            else:
+                portfolio_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Portfolio.pdf")
+
+                
+            invoice_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Invoice.pdf")
+            
+            error_msg = ""
+            success = False
+            
+            valuation = item["valuation"]
+            fee_amount = 0.0
+            cgst, sgst, igst, total_amount = 0.0, 0.0, 0.0, 0.0
+            
+            try:
+                if import_mode == "sheet":
+                    log_progress(" Applying UI overrides to master sheet...", "debug")
+                    apply_ui_overrides_to_excel(master_xlsx_copy, item)
+                    
+                    # Check Excel availability
+                    if processing.EXCEL_AVAILABLE:
+                        log_progress(" Generating tax invoice from Excel template...", "debug")
+                        processing.generate_invoice_pdf_via_excel(master_xlsx_copy, client_name, invoice_pdf_path, excel_app=excel_app)
+                        
+                        if portfolio_excel_source:
+                            log_progress(f" Generating portfolio report from individual workbook: {os.path.basename(portfolio_excel_source)}...", "debug")
+                            cleansed_pf_path = os.path.join(static_xlsx_dir, f"{safe_client_name}_Portfolio_Clean.xlsx")
+                            processing.cleanse_formulas(portfolio_excel_source, cleansed_pf_path)
+                            processing.convert_excel_to_pdf(cleansed_pf_path, portfolio_pdf_path, excel_app=excel_app)
+                        elif matched_sheet:
+                            log_progress(f" Generating portfolio report from sheet: {matched_sheet}...", "debug")
+                            processing.convert_excel_to_pdf(master_xlsx_copy, portfolio_pdf_path, matched_sheet, excel_app=excel_app)
+
+                    else:
+                        # Fallback ReportLab Generation
+                        log_progress(" Excel not available. Running fallback ReportLab generators...", "warning")
+                        # Set up invoice details
+                        invoice_data = {
+                            "invoice_number": item.get("invoice_number") or f"{invoice_prefix}{next_inv_num:04d}",
+                            "date": datetime.today().strftime('%d-%b-%Y'),
+                            "client_name": client_name,
+                            "client_address": item["address"],
+                            "client_state": item["state"],
+                            "client_gstin": item.get("gstin", ""),
+                            "valuation": item["valuation"],
+                            "fee_amount": item.get("fee_amount", 0.0),
+                            "cgst": item.get("cgst", 0.0),
+                            "sgst": item.get("sgst", 0.0),
+                            "igst": item.get("igst", 0.0),
+                            "total_amount": item.get("total_amount", 0.0),
+                            "particulars": item.get("particulars", ""),
+                            "rate": item.get("rate", 0.0),
+                            "period_start": item.get("period_start", ""),
+                            "period_end": item.get("period_end", "")
+                        }
+                        processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
+                        
+                        if portfolio_excel_source:
+                            cleansed_pf_path = os.path.join(static_xlsx_dir, f"{safe_client_name}_Portfolio_Clean.xlsx")
+                            processing.cleanse_formulas(portfolio_excel_source, cleansed_pf_path)
+                            processing.convert_excel_to_pdf_fallback(cleansed_pf_path, portfolio_pdf_path)
+                        elif matched_sheet:
+                            processing.convert_excel_to_pdf_fallback(master_xlsx_copy, portfolio_pdf_path, matched_sheet)
+
+
+                    # Now read calculated values from Excel copy (if excel was run, it recalculated)
+                    calc_vals = read_calculated_values_from_excel(master_xlsx_copy, client_name)
+                    if calc_vals:
+                        fee_amount = calc_vals["fee_amount"]
+                        cgst = calc_vals["cgst"]
+                        sgst = calc_vals["sgst"]
+                        igst = calc_vals["igst"]
+                        total_amount = calc_vals["total_amount"]
+                        invoice_code = calc_vals["invoice_number"] or item.get("invoice_number") or f"{invoice_prefix}{next_inv_num:04d}"
+                    else:
+                        # Use fallback values from item
+                        fee_amount = item.get("fee_amount", 0.0)
+                        cgst = item.get("cgst", 0.0)
+                        sgst = item.get("sgst", 0.0)
+                        igst = item.get("igst", 0.0)
+                        total_amount = item.get("total_amount", 0.0)
+                        invoice_code = item.get("invoice_number") or f"{invoice_prefix}{next_inv_num:04d}"
+                else:
+                    # Folder mode logic (original logic)
+                    pf_source = portfolio_excel_source or filename_full
+                    log_progress(f" Cleansing portfolio excel formulas from {os.path.basename(pf_source)}...", "debug")
+                    processing.cleanse_formulas(pf_source, flat_excel_path)
+                    
+                    log_progress(" Converting portfolio worksheets to PDF...", "debug")
+                    processing.convert_excel_to_pdf(flat_excel_path, portfolio_pdf_path, excel_app=excel_app)
+
+                    
+                    # Fee
+                    fee_amount = processing.calculate_fees(valuation, fee_rules, fee_type)
+                    log_progress(f" Fee amount calculated: INR {fee_amount:,.2f}", "debug")
+                    
+                    # GST
+                    state = item["state"]
+                    gst_calc = processing.calculate_gst(fee_amount, state, gst_rates)
+                    cgst = gst_calc["cgst"]
+                    sgst = gst_calc["sgst"]
+                    igst = gst_calc["igst"]
+                    total_amount = gst_calc["total_amount"]
+                    
+                    # PDF Invoice
+                    log_progress(" Rendering tax invoice document...", "debug")
+                    invoice_code = f"{invoice_prefix}{next_inv_num:04d}"
+                    today_str = datetime.today().strftime('%d-%b-%Y')
+                    invoice_data = {
+                        "invoice_number": invoice_code,
+                        "date": today_str,
+                        "client_name": client_name,
+                        "client_address": item["address"],
+                        "client_state": state,
+                        "client_gstin": item["gstin"],
+                        "valuation": valuation,
+                        "fee_amount": fee_amount,
+                        "cgst": cgst,
+                        "sgst": sgst,
+                        "igst": igst,
+                        "total_amount": total_amount
+                    }
+                    processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
+                    next_inv_num += 1
+                
+                success = True
+                completed += 1
+                log_progress(f"Successfully generated files for {client_name}.", "success")
+            except Exception as ex:
+                failed += 1
+                success = False
+                error_msg = str(ex)
+                log_progress(f"Failed processing {client_name}: {error_msg}", "error")
+                
+            # Write job item
             if batch_id > 0:
                 try:
                     db_item = {
                         "batch_id": batch_id,
                         "filename": filename_base,
                         "client_name": client_name,
-                        "valuation": item["valuation"],
-                        "fee_amount": 0.0,
-                        "cgst": 0.0,
-                        "sgst": 0.0,
-                        "igst": 0.0,
-                        "total_amount": 0.0,
-                        "status": "Skipped (Not Billable)",
-                        "error_msg": "",
-                        "portfolio_pdf_path": "",
-                        "invoice_pdf_path": "",
-                        "email_status": "Skipped",
-                        "custom_message": custom_message
+                        "valuation": valuation,
+                        "fee_amount": fee_amount,
+                        "cgst": cgst,
+                        "sgst": sgst,
+                        "igst": igst,
+                        "total_amount": total_amount,
+                        "status": "Completed" if success else "Failed",
+                        "error_msg": error_msg if not success else "",
+                        "portfolio_pdf_path": portfolio_pdf_path if success else "",
+                        "invoice_pdf_path": invoice_pdf_path if success else "",
+                        "email_status": "Pending",
+                        "custom_message": custom_message,
+                        "invoice_number": invoice_code if success else ""
                     }
                     database.add_job_item(db_item)
+                    try:
+                        database.save_client({
+                            "client_name": client_name,
+                            "client_type": item.get("client_type", "Type 1"),
+                            "state": item.get("state", "Maharashtra"),
+                            "email": item.get("email", ""),
+                            "cc_email": item.get("cc_email", ""),
+                            "address": item.get("address", ""),
+                            "gstin": item.get("gstin", "")
+                        })
+                    except Exception as db_cl_ex:
+                        log_progress(f"Database client registry logging error: {db_cl_ex}", "error")
                 except Exception as db_ex:
                     log_progress(f"Database logging error: {db_ex}", "error")
-            completed += 1
+                    
             PROGRESS_STATE["completed"] = completed
-            continue
+            PROGRESS_STATE["failed"] = failed
             
-        log_progress(f"[{idx+1}/{total}] Processing client: {client_name}", "info")
+        log_progress(f"Batch completed! Successful: {completed} | Failed: {failed}", "info")
         
-        safe_client_name = "".join([c for c in client_name if c.isalnum() or c in (" ", "_", "-")]).strip().replace(" ", "_")
-        flat_excel_path = os.path.join(static_xlsx_dir, f"{safe_client_name}_Processed.xlsx")
-        
-        matched_sheet = item.get("matched_sheet")
-        portfolio_pdf_path = ""
-        if import_mode == "sheet":
-            if matched_sheet:
-                portfolio_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Portfolio.pdf")
-        else:
-            portfolio_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Portfolio.pdf")
-            
-        invoice_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Invoice.pdf")
-        
-        error_msg = ""
-        success = False
-        
-        valuation = item["valuation"]
-        fee_amount = 0.0
-        cgst, sgst, igst, total_amount = 0.0, 0.0, 0.0, 0.0
-        
-        try:
-            if import_mode == "sheet":
-                log_progress(" Applying UI overrides to master sheet...", "debug")
-                apply_ui_overrides_to_excel(master_xlsx_copy, item)
-                
-                # Check Excel availability
-                if processing.EXCEL_AVAILABLE:
-                    log_progress(" Generating tax invoice from Excel template...", "debug")
-                    processing.generate_invoice_pdf_via_excel(master_xlsx_copy, client_name, invoice_pdf_path)
-                    
-                    if matched_sheet:
-                        log_progress(f" Generating portfolio report from sheet: {matched_sheet}...", "debug")
-                        processing.convert_excel_to_pdf(master_xlsx_copy, portfolio_pdf_path, matched_sheet)
-                else:
-                    # Fallback ReportLab Generation
-                    log_progress(" Excel not available. Running fallback ReportLab generators...", "warning")
-                    # Set up invoice details
-                    invoice_data = {
-                        "invoice_number": item.get("invoice_number") or f"{invoice_prefix}{next_inv_num:04d}",
-                        "date": datetime.today().strftime('%d-%b-%Y'),
-                        "client_name": client_name,
-                        "client_address": item["address"],
-                        "client_state": item["state"],
-                        "client_gstin": item.get("gstin", ""),
-                        "valuation": item["valuation"],
-                        "fee_amount": item.get("fee_amount", 0.0),
-                        "cgst": item.get("cgst", 0.0),
-                        "sgst": item.get("sgst", 0.0),
-                        "igst": item.get("igst", 0.0),
-                        "total_amount": item.get("total_amount", 0.0),
-                        "particulars": item.get("particulars", ""),
-                        "rate": item.get("rate", 0.0),
-                        "period_start": item.get("period_start", ""),
-                        "period_end": item.get("period_end", "")
-                    }
-                    processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
-                    
-                    if matched_sheet:
-                        processing.convert_excel_to_pdf_fallback(master_xlsx_copy, portfolio_pdf_path, matched_sheet)
-
-                # Now read calculated values from Excel copy (if excel was run, it recalculated)
-                calc_vals = read_calculated_values_from_excel(master_xlsx_copy, client_name)
-                if calc_vals:
-                    fee_amount = calc_vals["fee_amount"]
-                    cgst = calc_vals["cgst"]
-                    sgst = calc_vals["sgst"]
-                    igst = calc_vals["igst"]
-                    total_amount = calc_vals["total_amount"]
-                    invoice_code = calc_vals["invoice_number"] or item.get("invoice_number") or f"{invoice_prefix}{next_inv_num:04d}"
-                else:
-                    # Use fallback values from item
-                    fee_amount = item.get("fee_amount", 0.0)
-                    cgst = item.get("cgst", 0.0)
-                    sgst = item.get("sgst", 0.0)
-                    igst = item.get("igst", 0.0)
-                    total_amount = item.get("total_amount", 0.0)
-                    invoice_code = item.get("invoice_number") or f"{invoice_prefix}{next_inv_num:04d}"
-            else:
-                # Folder mode logic (original logic)
-                log_progress(" Cleansing excel formulas...", "debug")
-                processing.cleanse_formulas(filename_full, flat_excel_path)
-                
-                log_progress(" Converting portfolio worksheets to PDF...", "debug")
-                processing.convert_excel_to_pdf(flat_excel_path, portfolio_pdf_path)
-                
-                # Fee
-                fee_amount = processing.calculate_fees(valuation, fee_rules, fee_type)
-                log_progress(f" Fee amount calculated: INR {fee_amount:,.2f}", "debug")
-                
-                # GST
-                state = item["state"]
-                gst_calc = processing.calculate_gst(fee_amount, state, gst_rates)
-                cgst = gst_calc["cgst"]
-                sgst = gst_calc["sgst"]
-                igst = gst_calc["igst"]
-                total_amount = gst_calc["total_amount"]
-                
-                # PDF Invoice
-                log_progress(" Rendering tax invoice document...", "debug")
-                invoice_code = f"{invoice_prefix}{next_inv_num:04d}"
-                today_str = datetime.today().strftime('%d-%b-%Y')
-                invoice_data = {
-                    "invoice_number": invoice_code,
-                    "date": today_str,
-                    "client_name": client_name,
-                    "client_address": item["address"],
-                    "client_state": state,
-                    "client_gstin": item["gstin"],
-                    "valuation": valuation,
-                    "fee_amount": fee_amount,
-                    "cgst": cgst,
-                    "sgst": sgst,
-                    "igst": igst,
-                    "total_amount": total_amount
-                }
-                processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
-                next_inv_num += 1
-            
-            success = True
-            completed += 1
-            log_progress(f"Successfully generated files for {client_name}.", "success")
-        except Exception as ex:
-            failed += 1
-            success = False
-            error_msg = str(ex)
-            log_progress(f"Failed processing {client_name}: {error_msg}", "error")
-            
-        # Write job item
         if batch_id > 0:
             try:
-                db_item = {
-                    "batch_id": batch_id,
-                    "filename": filename_base,
-                    "client_name": client_name,
-                    "valuation": valuation,
-                    "fee_amount": fee_amount,
-                    "cgst": cgst,
-                    "sgst": sgst,
-                    "igst": igst,
-                    "total_amount": total_amount,
-                    "status": "Completed" if success else "Failed",
-                    "error_msg": error_msg if not success else "",
-                    "portfolio_pdf_path": portfolio_pdf_path if success else "",
-                    "invoice_pdf_path": invoice_pdf_path if success else "",
-                    "email_status": "Pending",
-                    "custom_message": custom_message,
-                    "invoice_number": invoice_code if success else ""
-                }
-                database.add_job_item(db_item)
+                database.save_setting("next_invoice_number", next_inv_num)
+                batch_status = "Completed" if failed == 0 else ("Failed" if completed == 0 else "Partially Completed")
+                database.update_batch(batch_id, completed, failed, batch_status)
             except Exception as db_ex:
-                log_progress(f"Database logging error: {db_ex}", "error")
+                log_progress(f"DB finalize error: {db_ex}", "error")
                 
-        PROGRESS_STATE["completed"] = completed
-        PROGRESS_STATE["failed"] = failed
-        
-    log_progress(f"Batch completed! Successful: {completed} | Failed: {failed}", "info")
-    
-    if batch_id > 0:
-        try:
-            database.save_setting("next_invoice_number", next_inv_num)
-            batch_status = "Completed" if failed == 0 else ("Failed" if completed == 0 else "Partially Completed")
-            database.update_batch(batch_id, completed, failed, batch_status)
-        except Exception as db_ex:
-            log_progress(f"DB finalize error: {db_ex}", "error")
-            
-    PROGRESS_STATE["running"] = False
-    PROGRESS_STATE["status"] = "Completed"
+        PROGRESS_STATE["running"] = False
+        PROGRESS_STATE["status"] = "Completed"
+
+    finally:
+        if excel_app:
+            try:
+                excel_app.Workbooks.Close()
+            except:
+                pass
+            try:
+                excel_app.Quit()
+                log_progress("Closed reusable background Microsoft Excel instance.", "info")
+            except:
+                pass
+            try:
+                import pythoncom
+                pythoncom.CoUninitialize()
+            except:
+                pass
 
 @app.post("/api/batch/process")
 def start_batch_processing(payload: BatchProcessRequest, background_tasks: BackgroundTasks):
@@ -770,7 +901,10 @@ def run_email_thread(item_ids: List[int]):
             EMAIL_STATE["completed"] += 1
             continue
             
-        invoice_code = os.path.basename(item["invoice_pdf_path"]).replace("_Invoice.pdf", "") if item["invoice_pdf_path"] else "N/A"
+        # Use stored invoice_number field; fall back to prefix+id only if missing
+        invoice_code = (item.get("invoice_number") or "").strip()
+        if not invoice_code:
+            invoice_code = f"{settings.get('invoice_prefix', 'INV-')}{item_id:04d}"
         invoice_details = {
             "invoice_number": invoice_code,
             "valuation": item["valuation"],
@@ -780,6 +914,27 @@ def run_email_thread(item_ids: List[int]):
         }
         
         try:
+            context = {
+                "ClientName": client_name,
+                "InvoiceNumber": invoice_code,
+                "Valuation": item["valuation"],
+                "FeeAmount": item["fee_amount"],
+                "TotalAmount": item["total_amount"],
+                "CustomMessage": item.get("custom_message", "") or ""
+            }
+            try:
+                subject = subject_template.format(**context)
+                body = body_template.format(**context)
+                custom_msg = item.get("custom_message", "")
+                if custom_msg and "{CustomMessage}" not in body_template:
+                    if "Best Regards" in body:
+                        body = body.replace("Best Regards", f"{custom_msg}\n\nBest Regards")
+                    else:
+                        body = f"{body}\n\n{custom_msg}"
+            except:
+                subject = subject_template
+                body = body_template
+
             email_service.send_client_email(
                 settings,
                 client_info,
@@ -792,10 +947,43 @@ def run_email_thread(item_ids: List[int]):
             EMAIL_STATE["completed"] += 1
             EMAIL_STATE["logs"].append(f"Success: Sent reports to {client_name}.")
             database.update_job_item(item_id, {"email_status": "Sent"})
+            
+            import json
+            database.add_email_log({
+                "client_name": client_name,
+                "recipient_email": to_email,
+                "cc_email": client_info.get("cc_email", ""),
+                "subject": subject,
+                "body": body,
+                "status": "Sent",
+                "error_msg": "",
+                "attachments": json.dumps(attachments),
+                "email_type": "invoice"
+            })
         except Exception as e:
             EMAIL_STATE["failed"] += 1
             EMAIL_STATE["logs"].append(f"Failed {client_name}: {e}")
             database.update_job_item(item_id, {"email_status": f"Failed: {str(e)[:40]}"})
+            
+            import json
+            try:
+                subj = subject
+                bdy = body
+            except:
+                subj = subject_template
+                bdy = body_template
+            database.add_email_log({
+                "client_name": client_name,
+                "recipient_email": to_email,
+                "cc_email": client_info.get("cc_email", ""),
+                "subject": subj,
+                "body": bdy,
+                "status": "Failed",
+                "error_msg": str(e),
+                "attachments": json.dumps(attachments),
+                "email_type": "invoice"
+            })
+
             
     conn.close()
     EMAIL_STATE["running"] = False
@@ -811,6 +999,35 @@ def send_bulk_emails(payload: EmailSendRequest, background_tasks: BackgroundTask
 @app.get("/api/email/progress")
 def get_email_progress():
     return EMAIL_STATE
+
+@app.post("/api/email/test")
+def test_email_connection(payload: Dict[str, str]):
+    """
+    Quick SMTP connectivity test. POST { "to_email": "..." } to send a test message
+    using the currently-saved SMTP settings.
+    """
+    to_email = payload.get("to_email", "").strip()
+    if not to_email:
+        raise HTTPException(status_code=400, detail="to_email is required")
+    settings = database.get_all_settings()
+    try:
+        email_service.send_smtp_email(
+            smtp_config=settings,
+            to_email=to_email,
+            cc_email="",
+            subject="Portfolio Billing — SMTP Test",
+            body=(
+                "Hello,\n\n"
+                "This is a test email from the Portfolio Billing Automation system.\n"
+                "If you received this, your SMTP settings are correctly configured.\n\n"
+                f"Server : {settings.get('email_smtp_server', '')}:{settings.get('email_smtp_port', '')}\n"
+                f"TLS    : {settings.get('email_smtp_tls', 'starttls')}\n"
+            ),
+            attachments=[]
+        )
+        return {"status": "success", "message": f"Test email sent to {to_email}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- EXCEL SINGLE SHEET PARSE & LEDGER ENDPOINTS ---
 @app.post("/api/excel/select")
@@ -879,6 +1096,15 @@ class JobItemEditPayload(BaseModel):
     valuation: float
     is_regular: bool = True
     custom_message: str = ""
+    invoice_number: Optional[str] = ""
+    portfolio_pdf_path: Optional[str] = ""
+    invoice_pdf_path: Optional[str] = ""
+    override_calculations: Optional[bool] = False
+    fee_amount: Optional[float] = 0.0
+    cgst: Optional[float] = 0.0
+    sgst: Optional[float] = 0.0
+    igst: Optional[float] = 0.0
+    total_amount: Optional[float] = 0.0
 
 @app.post("/api/invoices/{item_id}/edit")
 def edit_job_item(item_id: int, payload: JobItemEditPayload):
@@ -916,43 +1142,56 @@ def edit_job_item(item_id: int, payload: JobItemEditPayload):
             fee_amount, cgst, sgst, igst, total_amount = 0.0, 0.0, 0.0, 0.0, 0.0
             status = "Skipped (Not Billable)"
             invoice_pdf_path = ""
+            invoice_code = ""
         else:
-            fee_amount = processing.calculate_fees(valuation, fee_rules, fee_type)
-            gst_calc = processing.calculate_gst(fee_amount, payload.state, gst_rates)
-            cgst = gst_calc["cgst"]
-            sgst = gst_calc["sgst"]
-            igst = gst_calc["igst"]
-            total_amount = gst_calc["total_amount"]
+            if payload.override_calculations:
+                fee_amount = payload.fee_amount if payload.fee_amount is not None else 0.0
+                cgst = payload.cgst if payload.cgst is not None else 0.0
+                sgst = payload.sgst if payload.sgst is not None else 0.0
+                igst = payload.igst if payload.igst is not None else 0.0
+                total_amount = payload.total_amount if payload.total_amount is not None else 0.0
+            else:
+                fee_amount = processing.calculate_fees(valuation, fee_rules, fee_type)
+                gst_calc = processing.calculate_gst(fee_amount, payload.state, gst_rates)
+                cgst = gst_calc["cgst"]
+                sgst = gst_calc["sgst"]
+                igst = gst_calc["igst"]
+                total_amount = gst_calc["total_amount"]
+                
             status = "Completed"
             
             # Paths
             pdf_dir = os.path.join(folder_path, "pdf")
             os.makedirs(pdf_dir, exist_ok=True)
             safe_client_name = "".join([c for c in payload.client_name if c.isalnum() or c in (" ", "_", "-")]).strip().replace(" ", "_")
-            invoice_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Invoice.pdf")
+            default_invoice_pdf_path = os.path.normpath(os.path.join(pdf_dir, f"{safe_client_name}_Invoice.pdf"))
             
-            # Generate invoice number if not existing
-            invoice_code = item.get("invoice_number")
+            invoice_code = payload.invoice_number if payload.invoice_number else item.get("invoice_number", "")
             if not invoice_code:
                 invoice_prefix = settings.get("invoice_prefix", "INV-2026-")
                 invoice_code = f"{invoice_prefix}{item_id:04d}"
                 
-            # Render PDF Invoice
-            invoice_data = {
-                "invoice_number": invoice_code,
-                "date": datetime.today().strftime('%d-%b-%Y'),
-                "client_name": payload.client_name,
-                "client_address": payload.address,
-                "client_state": payload.state,
-                "client_gstin": payload.gstin,
-                "valuation": valuation,
-                "fee_amount": fee_amount,
-                "cgst": cgst,
-                "sgst": sgst,
-                "igst": igst,
-                "total_amount": total_amount
-            }
-            processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
+            # If payload.invoice_pdf_path is provided, not default, and exists on disk, use it and do NOT regenerate
+            if payload.invoice_pdf_path and os.path.normpath(payload.invoice_pdf_path) != default_invoice_pdf_path and os.path.exists(payload.invoice_pdf_path):
+                invoice_pdf_path = payload.invoice_pdf_path
+            else:
+                invoice_pdf_path = default_invoice_pdf_path
+                # Render PDF Invoice
+                invoice_data = {
+                    "invoice_number": invoice_code,
+                    "date": datetime.today().strftime('%d-%b-%Y'),
+                    "client_name": payload.client_name,
+                    "client_address": payload.address,
+                    "client_state": payload.state,
+                    "client_gstin": payload.gstin,
+                    "valuation": valuation,
+                    "fee_amount": fee_amount,
+                    "cgst": cgst,
+                    "sgst": sgst,
+                    "igst": igst,
+                    "total_amount": total_amount
+                }
+                processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
             
         # Update client profile in registry
         database.save_client({
@@ -976,8 +1215,10 @@ def edit_job_item(item_id: int, payload: JobItemEditPayload):
             "total_amount": total_amount,
             "status": status,
             "invoice_pdf_path": invoice_pdf_path,
+            "portfolio_pdf_path": payload.portfolio_pdf_path if payload.portfolio_pdf_path is not None else "",
             "custom_message": payload.custom_message,
-            "email_status": "Pending" if is_regular else "Skipped"
+            "email_status": "Pending" if is_regular else "Skipped",
+            "invoice_number": invoice_code
         }
         database.update_job_item(item_id, updates)
         
@@ -1073,6 +1314,305 @@ def export_billing_ledger(payload: Dict[str, str]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
+# --- EMAIL TEMPLATES & CUSTOM DISPATCH ---
+@app.get("/api/email/invoice-template/{item_id}")
+def get_invoice_template(item_id: int):
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM job_items WHERE id = ?", (item_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Invoice item not found")
+        
+    item = dict(row)
+    client_name = item["client_name"]
+    client_info = database.get_client(client_name)
+    if not client_info:
+        client_info = {
+            "client_name": client_name,
+            "email": "",
+            "cc_email": ""
+        }
+        
+    settings = database.get_all_settings()
+    subject_template = settings.get("email_subject_template", "Portfolio Performance Report & Invoice - {ClientName}")
+    body_template = settings.get("email_body_template", "Dear {ClientName},\n...")
+    
+    invoice_code = item["invoice_number"] or f"{settings.get('invoice_prefix', 'INV-2026-')}{item_id:04d}"
+    
+    context = {
+        "ClientName": client_name,
+        "InvoiceNumber": invoice_code,
+        "Valuation": float(item["valuation"]) if item["valuation"] is not None else 0.0,
+        "FeeAmount": float(item["fee_amount"]) if item["fee_amount"] is not None else 0.0,
+        "TotalAmount": float(item["total_amount"]) if item["total_amount"] is not None else 0.0,
+        "CustomMessage": item.get("custom_message", "") or ""
+    }
+
+    
+    try:
+        subject = subject_template.format(**context)
+        body = body_template.format(**context)
+        custom_msg = item.get("custom_message", "")
+        if custom_msg and "{CustomMessage}" not in body_template:
+            if "Best Regards" in body:
+                body = body.replace("Best Regards", f"{custom_msg}\n\nBest Regards")
+            else:
+                body = f"{body}\n\n{custom_msg}"
+    except Exception as e:
+        subject = subject_template
+        body = body_template
+        
+    attachments = []
+    if item["portfolio_pdf_path"] and os.path.exists(item["portfolio_pdf_path"]):
+        attachments.append(item["portfolio_pdf_path"])
+    if item["invoice_pdf_path"] and os.path.exists(item["invoice_pdf_path"]):
+        attachments.append(item["invoice_pdf_path"])
+        
+    return {
+        "client_name": client_name,
+        "recipient": client_info.get("email", ""),
+        "cc": client_info.get("cc_email", ""),
+        "subject": subject,
+        "body": body,
+        "attachments": attachments
+    }
+
+@app.get("/api/email/payment-template/{item_id}")
+def get_payment_template(item_id: int):
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM job_items WHERE id = ?", (item_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Invoice item not found")
+        
+    item = dict(row)
+    client_name = item["client_name"]
+    client_info = database.get_client(client_name)
+    if not client_info:
+        client_info = {
+            "client_name": client_name,
+            "email": "",
+            "cc_email": ""
+        }
+        
+    settings = database.get_all_settings()
+    
+    invoice_code = item["invoice_number"] or f"{settings.get('invoice_prefix', 'INV-2026-')}{item_id:04d}"
+    
+    total_amt_val = float(item["total_amount"]) if item["total_amount"] is not None else 0.0
+    subject = f"Payment Received: Invoice {invoice_code} - {client_name}"
+    body = (
+        f"Dear {client_name},\n\n"
+        f"We have successfully received your payment of INR {total_amt_val:,.2f} "
+        f"towards Invoice {invoice_code} on {item['payment_date'] or datetime.today().strftime('%Y-%m-%d')}.\n\n"
+        f"Thank you for your business.\n\n"
+        f"Best Regards,\n"
+        f"{settings.get('company_name', 'Antigravity Wealth Management')}"
+    )
+
+    
+    attachments = []
+    if item["invoice_pdf_path"] and os.path.exists(item["invoice_pdf_path"]):
+        attachments.append(item["invoice_pdf_path"])
+        
+    return {
+        "client_name": client_name,
+        "recipient": client_info.get("email", ""),
+        "cc": client_info.get("cc_email", ""),
+        "subject": subject,
+        "body": body,
+        "attachments": attachments
+    }
+
+@app.post("/api/email/send-custom")
+def send_custom_email(payload: CustomEmailRequest):
+    settings = database.get_all_settings()
+    attachments = []
+    for path in payload.attachments:
+        if path and os.path.exists(path):
+            attachments.append(path)
+            
+    try:
+        use_outlook = settings.get("email_use_outlook", "0") == "1"
+        if use_outlook:
+            email_service.send_outlook_email(
+                payload.recipient,
+                payload.cc,
+                payload.subject,
+                payload.body,
+                attachments,
+                display=False
+            )
+        else:
+            email_service.send_smtp_email(
+                settings,
+                payload.recipient,
+                payload.cc,
+                payload.subject,
+                payload.body,
+                attachments
+            )
+            
+        import json
+        log_id = database.add_email_log({
+            "client_name": payload.client_name,
+            "recipient_email": payload.recipient,
+            "cc_email": payload.cc,
+            "subject": payload.subject,
+            "body": payload.body,
+            "status": "Sent",
+            "error_msg": "",
+            "attachments": json.dumps(attachments),
+            "email_type": payload.email_type
+        })
+        
+        if payload.item_id:
+            database.update_job_item(payload.item_id, {"email_status": "Sent"})
+            
+        return {"status": "success", "log_id": log_id}
+    except Exception as e:
+        import json
+        database.add_email_log({
+            "client_name": payload.client_name,
+            "recipient_email": payload.recipient,
+            "cc_email": payload.cc,
+            "subject": payload.subject,
+            "body": payload.body,
+            "status": "Failed",
+            "error_msg": str(e),
+            "attachments": json.dumps(payload.attachments),
+            "email_type": payload.email_type
+        })
+        
+        if payload.item_id:
+            database.update_job_item(payload.item_id, {"email_status": f"Failed: {str(e)[:40]}"})
+            
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/email/select-attachments")
+def select_attachments():
+    files = []
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.wm_attributes('-topmost', 1)
+        selected_files = filedialog.askopenfilenames(
+            title="Select Email Attachments"
+        )
+        root.destroy()
+        if selected_files:
+            files = [os.path.normpath(f) for f in selected_files]
+    except Exception as e:
+        print(f"Error selecting attachments: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"attachments": files}
+
+@app.post("/api/files/select-pdf")
+def select_pdf_file():
+    file_path = ""
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.wm_attributes('-topmost', 1)
+        selected_file = filedialog.askopenfilename(
+            title="Select PDF Document",
+            filetypes=[("PDF Files", "*.pdf"), ("All Files", "*.*")]
+        )
+        root.destroy()
+        if selected_file:
+            file_path = os.path.normpath(selected_file)
+    except Exception as e:
+        print(f"Error selecting PDF file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"file_path": file_path}
+
+@app.get("/api/email/history")
+def get_email_history():
+    try:
+        return database.get_all_email_history(500)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- CLIENT REGISTRY & HISTORY ---
+
+@app.get("/api/clients/{client_name}/history")
+def get_client_history(client_name: str):
+    try:
+        client_info = database.get_client(client_name)
+        if not client_info:
+            conn = database.get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT client_name FROM job_items WHERE client_name = ?", (client_name,))
+            row = cursor.fetchone()
+            conn.close()
+            if not row:
+                raise HTTPException(status_code=404, detail="Client not found")
+            client_info = {
+                "client_name": client_name,
+                "client_type": "Type 1",
+                "state": "Maharashtra",
+                "email": "",
+                "cc_email": "",
+                "address": "",
+                "gstin": ""
+            }
+            
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT j.*, b.timestamp as batch_date
+        FROM job_items j
+        LEFT JOIN batches b ON j.batch_id = b.id
+        WHERE j.client_name = ?
+        ORDER BY j.id DESC
+        """, (client_name,))
+        billing_history = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        email_history = database.get_client_email_history(client_name)
+        
+        return {
+            "profile": client_info,
+            "billing": billing_history,
+            "emails": email_history
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+# --- DEBUG ENDPOINT ---
+@app.post("/api/debug/sheet-columns")
+def debug_sheet_columns(payload: Dict[str, str]):
+    """Diagnostic endpoint: POST { excel_path } to see what columns are detected in the master sheet."""
+    import openpyxl
+    excel_path = payload.get("excel_path", "")
+    if not excel_path or not os.path.exists(excel_path):
+        raise HTTPException(status_code=400, detail="Invalid or missing excel_path")
+    try:
+        wb = openpyxl.load_workbook(excel_path, data_only=True)
+        master_sheet = processing.find_master_sheet_name(wb.sheetnames)
+        if not master_sheet:
+            return {"error": "No master sheet found", "sheet_names": wb.sheetnames}
+        ws = wb[master_sheet]
+        header_row, cols = processing.get_master_sheet_mapping(ws)
+        wb.close()
+        return {
+            "master_sheet": master_sheet,
+            "all_sheets": wb.sheetnames,
+            "header_row": header_row,
+            "columns_detected": cols,
+            "email_col_index": processing.get_mapped_col(cols, [
+                "client_email_id", "email_id", "email", "e_mail", "e-mail",
+                "client_email", "emailid", "email_address", "mail"
+            ])
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- STATIC FILES MOUNT ---
 # In production, we mount the frontend/dist directory to serve React SPA assets.

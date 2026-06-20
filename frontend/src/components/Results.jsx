@@ -1,6 +1,9 @@
 import { useEffect, useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import API_BASE from '../api';
+import EmailDraftModal from './EmailDraftModal';
 import { 
+
   CheckCircle, 
   XCircle, 
   Mail, 
@@ -14,7 +17,8 @@ import {
   Edit3,
   Database,
   Building,
-  MapPin
+  MapPin,
+  FolderOpen
 } from 'lucide-react';
 
 const INDIAN_STATES = [
@@ -32,6 +36,12 @@ export default function Results({ batchId, setBatchId }) {
   const [items, setItems] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [loading, setLoading] = useState(false);
+
+  // Email draft modal state
+  const [draftOpen, setDraftOpen] = useState(false);
+  const [draftEndpoint, setDraftEndpoint] = useState('');
+  const [draftPayload, setDraftPayload] = useState({});
+
   
   // Edit Invoice Side Drawer State
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -47,7 +57,16 @@ export default function Results({ batchId, setBatchId }) {
     gstin: '',
     valuation: 0.0,
     is_regular: true,
-    custom_message: ''
+    custom_message: '',
+    invoice_number: '',
+    portfolio_pdf_path: '',
+    invoice_pdf_path: '',
+    override_calculations: false,
+    fee_amount: 0.0,
+    cgst: 0.0,
+    sgst: 0.0,
+    igst: 0.0,
+    total_amount: 0.0
   });
 
   // Inline edit state
@@ -57,10 +76,31 @@ export default function Results({ batchId, setBatchId }) {
 
   const handleInputChange = (e) => {
     const { name, value, type, checked } = e.target;
+    const numericFields = ['valuation', 'fee_amount', 'cgst', 'sgst', 'igst', 'total_amount'];
     setFormState(prev => ({
       ...prev,
-      [name]: type === 'checkbox' ? checked : (name === 'valuation' ? parseFloat(value) || 0.0 : value)
+      [name]: type === 'checkbox' ? checked : (numericFields.includes(name) ? (parseFloat(value) || 0.0) : value)
     }));
+  };
+
+  const handleBrowseFile = async (target) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/files/select-pdf`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.file_path) {
+          setFormState(prev => ({
+            ...prev,
+            [target === 'portfolio' ? 'portfolio_pdf_path' : 'invoice_pdf_path']: data.file_path
+          }));
+        }
+      } else {
+        alert("Failed to open file picker: " + await res.text());
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error picking file: " + err.message);
+    }
   };
 
   const handleStartEditCell = (itemId, field, initialValue) => {
@@ -167,7 +207,16 @@ export default function Results({ batchId, setBatchId }) {
       gstin: '',
       valuation: item.valuation || 0.0,
       is_regular: item.status !== 'Skipped (Not Billable)',
-      custom_message: item.custom_message || ''
+      custom_message: item.custom_message || '',
+      invoice_number: item.invoice_number || '',
+      portfolio_pdf_path: item.portfolio_pdf_path || '',
+      invoice_pdf_path: item.invoice_pdf_path || '',
+      override_calculations: false,
+      fee_amount: item.fee_amount || 0.0,
+      cgst: item.cgst || 0.0,
+      sgst: item.sgst || 0.0,
+      igst: item.igst || 0.0,
+      total_amount: item.total_amount || 0.0
     });
     try {
       const res = await fetch(`${API_BASE}/api/clients/${encodeURIComponent(item.client_name)}`);
@@ -364,26 +413,16 @@ export default function Results({ batchId, setBatchId }) {
     }
   };
 
-  // Send email for a single invoice row
-  const handleSendSingleEmail = async (itemId) => {
-    const confirmSend = window.confirm(`Send email for this invoice?`);
-    if (!confirmSend) return;
-    try {
-      const res = await fetch(`${API_BASE}/api/email/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ item_ids: [itemId] })
-      });
-      if (res.ok) {
-        setEmailProgressOpen(true);
-        startPollingEmailProgress();
-      } else {
-        alert("Email trigger failed: " + await res.text());
-      }
-    } catch (err) {
-      console.error("Single email delivery failed", err);
-    }
+  // Send email for a single invoice row (opens Draft Modal)
+  const handleSendSingleEmail = (itemId) => {
+    setDraftEndpoint(`/api/email/invoice-template/${itemId}`);
+    setDraftPayload({
+      item_id: itemId,
+      email_type: 'invoice'
+    });
+    setDraftOpen(true);
   };
+
 
   const startPollingEmailProgress = () => {
     if (emailPollInterval.current) clearInterval(emailPollInterval.current);
@@ -544,10 +583,10 @@ export default function Results({ batchId, setBatchId }) {
                 {items.map((item) => {
                   const isSuccess = item.status === 'Completed';
                   const isSelected = selectedIds.includes(item.id);
-                  const cgst_sgst = item.cgst > 0 ? (item.cgst + item.sgst) : 0.0;
-                  const gstText = item.cgst > 0 
-                    ? `CGST+SGST (${item.cgst.toLocaleString('en-IN', {maximumFractionDigits:1})})` 
-                    : `IGST (${item.igst.toLocaleString('en-IN', {maximumFractionDigits:1})})`;
+                  const cgst_sgst = (item.cgst ?? 0) > 0 ? ((item.cgst ?? 0) + (item.sgst ?? 0)) : 0.0;
+                  const gstText = (item.cgst ?? 0) > 0 
+                    ? `CGST+SGST (${Number(item.cgst ?? 0).toLocaleString('en-IN', {maximumFractionDigits:1})})` 
+                    : `IGST (${Number(item.igst ?? 0).toLocaleString('en-IN', {maximumFractionDigits:1})})`;
                   return (
                     <tr key={item.id} className={`hover:bg-surface-container-highest/30 transition-colors ${!isSuccess ? 'opacity-50' : ''}`}>
                       <td className="py-4 px-6 whitespace-nowrap">
@@ -601,21 +640,21 @@ export default function Results({ batchId, setBatchId }) {
                           />
                         ) : (
                           <div className="flex items-center justify-between gap-1.5">
-                            <span>₹{item.valuation.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
-                          </div>
-                        )}
+                             <span>₹{Number(item.valuation ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                           </div>
+                         )}
                       </td>
                       <td className="py-4 px-6 whitespace-nowrap text-on-surface font-mono">
-                        ₹{item.fee_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        ₹{Number(item.fee_amount ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="py-4 px-6 whitespace-nowrap">
                         <span className="block font-mono text-on-surface font-semibold">
-                          ₹{(cgst_sgst > 0 ? cgst_sgst : item.igst).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          ₹{Number(cgst_sgst > 0 ? cgst_sgst : (item.igst ?? 0)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                         <span className="text-[9px] text-on-surface-variant font-medium">{gstText}</span>
                       </td>
                       <td className="py-4 px-6 whitespace-nowrap font-bold text-on-surface font-mono">
-                        ₹{item.total_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        ₹{Number(item.total_amount ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="py-4 px-6 text-center">
                         {cellLoading === item.id ? (
@@ -723,8 +762,8 @@ export default function Results({ batchId, setBatchId }) {
       </div>
 
       {/* Bulk Email progress dialog modal */}
-      {emailProgressOpen && (
-        <div className="fixed inset-0 z-50 overflow-hidden flex items-center justify-center p-4 animate-fade-in">
+      {emailProgressOpen && createPortal(
+        <div className="fixed inset-0 z-[999] overflow-hidden flex items-center justify-center p-4 animate-fade-in text-left">
           <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
           
           <div className="relative w-full max-w-2xl bg-[#10131a] glass-panel border border-[#232d3f]/60 rounded-xl shadow-2xl flex flex-col overflow-hidden max-h-[90vh]">
@@ -803,7 +842,8 @@ export default function Results({ batchId, setBatchId }) {
               </div>
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
       {/* Side-Drawer Details Panel Overlay */}
       {drawerOpen && (
@@ -978,7 +1018,7 @@ export default function Results({ batchId, setBatchId }) {
                   </div>
                 </div>
 
-                {/* Invoice specific info */}
+                {/* Client Billing Address & GSTIN/Invoice Number */}
                 <div className="space-y-4 pt-4 border-t border-[#232d3f]/60">
                   <div className="space-y-2">
                     <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Client Billing Address</label>
@@ -991,16 +1031,162 @@ export default function Results({ batchId, setBatchId }) {
                     />
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Client GSTIN (Optional)</label>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Client GSTIN (Optional)</label>
+                      <input
+                        type="text"
+                        name="gstin"
+                        value={formState.gstin}
+                        onChange={handleInputChange}
+                        placeholder="27AAAAA1111A1Z0"
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all font-mono"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Invoice Number</label>
+                      <input
+                        type="text"
+                        name="invoice_number"
+                        value={formState.invoice_number}
+                        onChange={handleInputChange}
+                        placeholder="INV-2026-0000"
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all font-mono"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* PDF File Attachments */}
+                <div className="space-y-4 pt-4 border-t border-[#232d3f]/60">
+                  <h4 className="text-xs font-bold text-on-surface flex items-center gap-1.5">
+                    📄 File Attachments
+                  </h4>
+                  
+                  <div className="space-y-3">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider block">Portfolio PDF Path</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          name="portfolio_pdf_path"
+                          value={formState.portfolio_pdf_path}
+                          onChange={handleInputChange}
+                          placeholder="No portfolio PDF attached"
+                          className="flex-1 bg-surface-lowest border border-outline-variant/40 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleBrowseFile('portfolio')}
+                          className="inline-flex items-center justify-center gap-1.5 px-3 py-2 border border-outline-variant/35 rounded-lg text-xs font-bold bg-surface-container-low hover:bg-surface-container-high text-on-surface transition-colors cursor-pointer"
+                        >
+                          <FolderOpen className="h-3.5 w-3.5" />
+                          Browse
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider block">Invoice PDF Path</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          name="invoice_pdf_path"
+                          value={formState.invoice_pdf_path}
+                          onChange={handleInputChange}
+                          placeholder="No invoice PDF generated yet"
+                          className="flex-1 bg-surface-lowest border border-outline-variant/40 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleBrowseFile('invoice')}
+                          className="inline-flex items-center justify-center gap-1.5 px-3 py-2 border border-outline-variant/35 rounded-lg text-xs font-bold bg-surface-container-low hover:bg-surface-container-high text-on-surface transition-colors cursor-pointer"
+                        >
+                          <FolderOpen className="h-3.5 w-3.5" />
+                          Browse
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Override Calculations & Amounts */}
+                <div className="space-y-4 pt-4 border-t border-[#232d3f]/60">
+                  <div className="flex items-center gap-3">
                     <input
-                      type="text"
-                      name="gstin"
-                      value={formState.gstin}
+                      type="checkbox"
+                      id="override_calculations"
+                      name="override_calculations"
+                      checked={formState.override_calculations}
                       onChange={handleInputChange}
-                      placeholder="27AAAAA1111A1Z0"
-                      className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all font-mono"
+                      className="rounded border-outline-variant/60 text-primary bg-surface-lowest focus:ring-primary h-4.5 w-4.5 cursor-pointer"
                     />
+                    <label htmlFor="override_calculations" className="text-xs font-bold text-on-surface cursor-pointer select-none">
+                      Override Calculated Amounts Manually
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-on-surface-variant uppercase tracking-wider block">Fee Amount</label>
+                      <input
+                        type="number"
+                        step="any"
+                        name="fee_amount"
+                        value={formState.fee_amount}
+                        disabled={!formState.override_calculations}
+                        onChange={handleInputChange}
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-3 py-1.5 text-xs text-on-surface font-mono disabled:opacity-50"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-on-surface-variant uppercase tracking-wider block">CGST</label>
+                      <input
+                        type="number"
+                        step="any"
+                        name="cgst"
+                        value={formState.cgst}
+                        disabled={!formState.override_calculations}
+                        onChange={handleInputChange}
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-3 py-1.5 text-xs text-on-surface font-mono disabled:opacity-50"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-on-surface-variant uppercase tracking-wider block">SGST</label>
+                      <input
+                        type="number"
+                        step="any"
+                        name="sgst"
+                        value={formState.sgst}
+                        disabled={!formState.override_calculations}
+                        onChange={handleInputChange}
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-3 py-1.5 text-xs text-on-surface font-mono disabled:opacity-50"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-on-surface-variant uppercase tracking-wider block">IGST</label>
+                      <input
+                        type="number"
+                        step="any"
+                        name="igst"
+                        value={formState.igst}
+                        disabled={!formState.override_calculations}
+                        onChange={handleInputChange}
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-3 py-1.5 text-xs text-on-surface font-mono disabled:opacity-50"
+                      />
+                    </div>
+                    <div className="space-y-1.5 md:col-span-2">
+                      <label className="text-[9px] font-bold text-on-surface-variant uppercase tracking-wider block">Total Amount</label>
+                      <input
+                        type="number"
+                        step="any"
+                        name="total_amount"
+                        value={formState.total_amount}
+                        disabled={!formState.override_calculations}
+                        onChange={handleInputChange}
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-3 py-1.5 text-xs text-on-surface font-mono disabled:opacity-50 font-bold"
+                      />
+                    </div>
                   </div>
                 </div>
               </form>
@@ -1028,6 +1214,22 @@ export default function Results({ batchId, setBatchId }) {
           </div>
         </div>
       )}
+
+      {/* Custom Email Draft Modal */}
+      <EmailDraftModal
+        isOpen={draftOpen}
+        onClose={() => {
+          setDraftOpen(false);
+          setDraftEndpoint('');
+        }}
+        templateEndpoint={draftEndpoint}
+        defaultPayload={draftPayload}
+        onSent={() => {
+          if (batchId) {
+            fetchBatchResults(batchId);
+          }
+        }}
+      />
       </div>
   );
 }

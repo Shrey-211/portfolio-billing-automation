@@ -93,6 +93,24 @@ def init_db(db_path=None):
     )
     """)
 
+    # Email History table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS email_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_name TEXT,
+        recipient_email TEXT,
+        cc_email TEXT,
+        subject TEXT,
+        body TEXT,
+        sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        status TEXT,
+        error_msg TEXT,
+        attachments TEXT,
+        email_type TEXT
+    )
+    """)
+
+
     # Ensure columns exist for older installations
     try:
         cursor.execute("ALTER TABLE job_items ADD COLUMN is_paid INTEGER DEFAULT 0")
@@ -137,6 +155,7 @@ def init_db(db_path=None):
             "email_smtp_port": "587",
             "email_smtp_user": "",
             "email_smtp_pass": "",  # To be stored encrypted in real environments
+            "email_smtp_tls": "starttls",  # "starttls" | "ssl" | "none"
             "email_subject_template": "Portfolio Performance Report & Invoice - {ClientName}",
             "email_body_template": "Dear {ClientName},\n\nPlease find attached your Portfolio Performance Report and GST Invoice ({InvoiceNumber}) for the period.\n\nPortfolio Valuation: INR {Valuation:,.2f}\nTotal Fees (incl. GST): INR {TotalAmount:,.2f}\n\nBest Regards,\nAntigravity Wealth Management",
             "taxable_amt_formula": "Value * Rate / 4"
@@ -146,6 +165,8 @@ def init_db(db_path=None):
             
     # Ensure taxable_amt_formula is present even if DB is already created
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('taxable_amt_formula', 'Value * Rate / 4')")
+    # Ensure email_smtp_tls is present in older databases
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('email_smtp_tls', 'starttls')")
 
     # Populate Default Fee Rules if empty
     cursor.execute("SELECT COUNT(*) FROM fee_rules")
@@ -302,7 +323,19 @@ def update_job_item(item_id, updates_dict, db_path=None):
 def get_batch_items(batch_id, db_path=None):
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM job_items WHERE batch_id = ?", (batch_id,))
+    cursor.execute("""
+        SELECT 
+            j.*,
+            COALESCE(c.email, '')       AS email,
+            COALESCE(c.cc_email, '')    AS cc_email,
+            COALESCE(c.address, '')     AS address,
+            COALESCE(c.gstin, '')       AS gstin,
+            COALESCE(c.state, '')       AS state,
+            COALESCE(c.client_type, '') AS client_type
+        FROM job_items j
+        LEFT JOIN clients c ON j.client_name = c.client_name
+        WHERE j.batch_id = ?
+    """, (batch_id,))
     items = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return items
@@ -318,7 +351,19 @@ def get_recent_batches(limit=10, db_path=None):
 def get_all_job_items(limit=1000, db_path=None):
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM job_items ORDER BY id DESC LIMIT ?", (limit,))
+    cursor.execute("""
+        SELECT 
+            j.*,
+            COALESCE(c.email, '')       AS email,
+            COALESCE(c.cc_email, '')    AS cc_email,
+            COALESCE(c.address, '')     AS address,
+            COALESCE(c.gstin, '')       AS gstin,
+            COALESCE(c.state, '')       AS state,
+            COALESCE(c.client_type, '') AS client_type
+        FROM job_items j
+        LEFT JOIN clients c ON j.client_name = c.client_name
+        ORDER BY j.id DESC LIMIT ?
+    """, (limit,))
     items = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return items
@@ -332,4 +377,33 @@ def update_payment_status(item_id, is_paid, payment_date=None, db_path=None):
     )
     conn.commit()
     conn.close()
+
+def add_email_log(log_data, db_path=None):
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO email_history (client_name, recipient_email, cc_email, subject, body, status, error_msg, attachments, email_type)
+    VALUES (:client_name, :recipient_email, :cc_email, :subject, :body, :status, :error_msg, :attachments, :email_type)
+    """, log_data)
+    log_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return log_id
+
+def get_client_email_history(client_name, db_path=None):
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM email_history WHERE client_name = ? ORDER BY sent_at DESC", (client_name,))
+    logs = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return logs
+
+def get_all_email_history(limit=500, db_path=None):
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM email_history ORDER BY sent_at DESC LIMIT ?", (limit,))
+    logs = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return logs
+
 

@@ -92,17 +92,16 @@ def cleanse_formulas(input_path, output_path):
                 continue
             sheet_data = wb_data[sheet_name]
             
-            # Iterate through all cells in the styled sheet
-            for r in range(1, sheet_styled.max_row + 1):
-                for c in range(1, sheet_styled.max_column + 1):
-                    cell_styled = sheet_styled.cell(row=r, column=c)
-                    val = cell_styled.value
-                    
-                    # If it's a formula (string starting with '=')
-                    if isinstance(val, str) and val.startswith("="):
-                        # Copy the evaluated value from the data sheet
-                        eval_val = sheet_data.cell(row=r, column=c).value
-                        cell_styled.value = eval_val
+            # FAST ITERATION: Only loop over instantiated cells in openpyxl memory
+            # This completely avoids iterating over millions of empty cells/columns
+            for (r, c), cell_styled in list(sheet_styled._cells.items()):
+                val = cell_styled.value
+                
+                # If it's a formula (string starting with '=')
+                if isinstance(val, str) and val.startswith("="):
+                    # Copy the evaluated value from the data sheet
+                    eval_val = sheet_data.cell(row=r, column=c).value
+                    cell_styled.value = eval_val
                         
         # Ensure output folder exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -341,7 +340,7 @@ def convert_excel_to_pdf_fallback(excel_path, pdf_path, sheet_name=None):
         print(f"Fallback portfolio PDF generation failed: {e}")
         raise e
 
-def convert_excel_to_pdf(excel_path, pdf_path, sheet_name=None):
+def convert_excel_to_pdf(excel_path, pdf_path, sheet_name=None, excel_app=None):
     """
     Uses win32com to open the excel file and export to PDF.
     Must be run in main thread or call pythoncom.CoInitialize() first if inside QThread.
@@ -351,19 +350,23 @@ def convert_excel_to_pdf(excel_path, pdf_path, sheet_name=None):
         print("win32com not available. Running ReportLab fallback for Portfolio PDF.")
         return convert_excel_to_pdf_fallback(excel_path, pdf_path, sheet_name)
         
-    pythoncom.CoInitialize()
-    excel = None
+    co_initialized = False
+    excel = excel_app
     wb = None
     try:
-        excel = win32com.client.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
+        if not excel:
+            pythoncom.CoInitialize()
+            co_initialized = True
+            excel = win32com.client.DispatchEx("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+            excel.AskToUpdateLinks = False
         
         abs_excel = os.path.abspath(excel_path)
         abs_pdf = os.path.abspath(pdf_path)
         
         os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
-        wb = excel.Workbooks.Open(abs_excel)
+        wb = excel.Workbooks.Open(abs_excel, UpdateLinks=0, ReadOnly=True)
         if sheet_name and sheet_name in [s.Name for s in wb.Sheets]:
             ws = wb.Sheets(sheet_name)
             orig_visibility = ws.Visible
@@ -391,12 +394,14 @@ def convert_excel_to_pdf(excel_path, pdf_path, sheet_name=None):
                 wb.Close(False)
             except:
                 pass
-        if excel:
+        # Only quit Excel and uninitialize COM if we spawned the Excel instance locally here
+        if not excel_app and excel:
             try:
                 excel.Quit()
             except:
                 pass
-        pythoncom.CoUninitialize()
+        if co_initialized:
+            pythoncom.CoUninitialize()
 
 def generate_invoice_pdf(pdf_path, invoice_details, company_details):
     """
@@ -701,8 +706,9 @@ def find_master_sheet_name(sheetnames):
 def get_master_sheet_mapping(ws):
     header_row = None
     cols = {}
+    max_col = min(max(ws.max_column or 1, 1), 40)  # scan up to 40 columns
     for r in range(1, 11):
-        row_vals = [ws.cell(row=r, column=c).value for c in range(1, min(25, ws.max_column + 1))]
+        row_vals = [ws.cell(row=r, column=c).value for c in range(1, max_col + 1)]
         normalized_vals = [str(v).strip().lower() if v is not None else "" for v in row_vals]
         if any(h in normalized_vals for h in ["client name", "name of client", "client_name", "name_of_client"]):
             header_row = r
@@ -835,7 +841,7 @@ def get_best_sheet_match(client_name, sheet_names):
             
     return best_match
 
-def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path):
+def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path, excel_app=None):
     if not EXCEL_AVAILABLE:
         raise RuntimeError("Microsoft Excel is not installed or pywin32 is not configured.")
         
@@ -843,19 +849,23 @@ def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path):
     import win32com.client
     import os
     
-    pythoncom.CoInitialize()
-    excel = None
+    co_initialized = False
+    excel = excel_app
     wb = None
     try:
-        excel = win32com.client.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
+        if not excel:
+            pythoncom.CoInitialize()
+            co_initialized = True
+            excel = win32com.client.DispatchEx("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+            excel.AskToUpdateLinks = False
         
         abs_excel = os.path.abspath(excel_path)
         abs_pdf = os.path.abspath(pdf_path)
         
         os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
-        wb = excel.Workbooks.Open(abs_excel)
+        wb = excel.Workbooks.Open(abs_excel, UpdateLinks=0, ReadOnly=False)
         
         ws = wb.Sheets("Invoice")
         ws.Range("B13").Value = client_key
@@ -873,12 +883,16 @@ def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path):
                 wb.Close(False)
             except:
                 pass
-        if excel:
+        if not excel_app and excel:
             try:
                 excel.Quit()
             except:
                 pass
-        pythoncom.CoUninitialize()
+        if co_initialized:
+            try:
+                pythoncom.CoUninitialize()
+            except:
+                pass
 
 def parse_single_excel_sheet(excel_path):
     """
@@ -907,7 +921,10 @@ def parse_single_excel_sheet(excel_path):
             return None, []
             
         col_name = get_mapped_col(cols, ["client_name", "name_of_client"], 3)
-        col_email = get_mapped_col(cols, ["client_email_id", "email_id", "email"], 9)
+        col_email = get_mapped_col(cols, [
+            "client_email_id", "email_id", "email", "e_mail", "e-mail",
+            "client_email", "emailid", "email_address", "mail"
+        ])
         col_invoice = get_mapped_col(cols, ["invoice_no", "invoice_number"], 5)
         col_rate = get_mapped_col(cols, ["fee_@", "rate"], 4)
         col_address = get_mapped_col(cols, ["address_1", "address"], 6)
@@ -927,7 +944,7 @@ def parse_single_excel_sheet(excel_path):
             if not client_name:
                 continue
             
-            email = str(ws_master.cell(row=r, column=col_email).value or "").strip()
+            email = str(ws_master.cell(row=r, column=col_email).value or "").strip() if col_email else ""
             invoice_no = str(ws_master.cell(row=r, column=col_invoice).value or "").strip()
             
             rate_val = ws_master.cell(row=r, column=col_rate).value
@@ -1120,4 +1137,57 @@ def parse_single_excel_sheet(excel_path):
 
     wb.close()
     return None, clients
+
+def find_portfolio_file_in_folder(folder_path, client_name):
+    portfolio_dir = os.path.join(folder_path, "portfolio")
+    if not os.path.isdir(portfolio_dir):
+        return None
+        
+    import re
+    import difflib
+    
+    # Normalize client name
+    c_clean = re.sub(r'[^a-zA-Z0-9\s]', '', client_name).lower().strip()
+    c_words = [w for w in c_clean.split() if w not in ('huf', 'and', 'trust', 'pvt', 'ltd', 'private', 'limited', 'equity', 'mf', 'portfolio', 'pf')]
+    if not c_words:
+        return None
+        
+    files = [f for f in os.listdir(portfolio_dir) if (f.endswith(".xlsx") or f.endswith(".xlsm")) and not f.startswith("~$")]
+    
+    best_match = None
+    max_score = 0
+    
+    for f in files:
+        f_lower = f.lower().strip()
+        f_clean = re.sub(r'[^a-zA-Z0-9\s]', '', os.path.splitext(f_lower)[0])
+        f_words = [w for w in f_clean.split() if w not in ('huf', 'and', 'trust', 'pvt', 'ltd', 'private', 'limited', 'equity', 'mf', 'portfolio', 'pf')]
+        if not f_words:
+            continue
+            
+        matches = 0
+        for cw in c_words:
+            m = difflib.get_close_matches(cw, f_words, n=1, cutoff=0.75)
+            if m:
+                matches += 1
+                
+        score = matches
+        first_word_matches = difflib.get_close_matches(c_words[0], f_words, n=1, cutoff=0.75)
+        if first_word_matches:
+            score += 1
+            
+        c_joined = "".join(c_words)
+        s_joined = "".join(f_words)
+        if c_joined == s_joined:
+            score += 5
+        elif c_joined in s_joined or s_joined in c_joined:
+            score += 2
+            
+        if score > max_score and score >= 2:
+            max_score = score
+            best_match = f
+            
+    if best_match:
+        return os.path.join(portfolio_dir, best_match)
+    return None
+
 

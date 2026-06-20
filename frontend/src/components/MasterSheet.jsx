@@ -18,6 +18,9 @@ import {
   FileText,
   Mail
 } from 'lucide-react';
+import InvoiceEditModal from './InvoiceEditModal';
+import EmailDraftModal from './EmailDraftModal';
+
 
 export default function MasterSheet({ folderPath }) {
   const [invoices, setInvoices] = useState([]);
@@ -33,6 +36,19 @@ export default function MasterSheet({ folderPath }) {
   const [editingCell, setEditingCell] = useState(null); // { itemId, field }
   const [editCellValue, setEditCellValue] = useState('');
   const [cellLoading, setCellLoading] = useState(null); // itemId
+
+  // Edit modal and Email draft modal state
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editInvoice, setEditInvoice] = useState(null);
+  const [draftOpen, setDraftOpen] = useState(false);
+  const [draftEndpoint, setDraftEndpoint] = useState('');
+  const [draftPayload, setDraftPayload] = useState({});
+
+  const handleStartEditInvoice = (invoice) => {
+    setEditInvoice(invoice);
+    setIsEditOpen(true);
+  };
+
 
   // Sorting and ID range filtering states
   const [minIdFilter, setMinIdFilter] = useState('');
@@ -205,6 +221,14 @@ export default function MasterSheet({ folderPath }) {
         setEditPaymentId(null);
         setCustomDate('');
         showFeedback("Invoice payment successfully recorded.");
+
+        // Open payment confirmation email draft modal
+        setDraftEndpoint(`/api/email/payment-template/${id}`);
+        setDraftPayload({
+          item_id: id,
+          email_type: 'payment_receipt'
+        });
+        setDraftOpen(true);
       } else {
         showFeedback("Failed to update payment status.", "error");
       }
@@ -213,6 +237,7 @@ export default function MasterSheet({ folderPath }) {
       showFeedback("Error reaching server.", "error");
     }
   };
+
 
   const handleMarkUnpaid = async (id) => {
     if (!window.confirm("Are you sure you want to mark this invoice as unpaid?")) return;
@@ -243,26 +268,15 @@ export default function MasterSheet({ folderPath }) {
     }
   };
 
-  const handleSendSingleEmail = async (itemId) => {
-    const confirmSend = window.confirm("Send email for this invoice?");
-    if (!confirmSend) return;
-    try {
-      const res = await fetch(`${API_BASE}/api/email/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ item_ids: [itemId] })
-      });
-      if (res.ok) {
-        showFeedback("Email dispatch triggered successfully.");
-        fetchInvoices();
-      } else {
-        showFeedback("Failed to trigger email: " + await res.text(), "error");
-      }
-    } catch (err) {
-      console.error("Error sending email:", err);
-      showFeedback("Error sending email: " + err.message, "error");
-    }
+  const handleSendSingleEmail = (itemId) => {
+    setDraftEndpoint(`/api/email/invoice-template/${itemId}`);
+    setDraftPayload({
+      item_id: itemId,
+      email_type: 'invoice'
+    });
+    setDraftOpen(true);
   };
+
 
   const handleExportLedger = async () => {
     if (!folderPath) {
@@ -538,15 +552,15 @@ export default function MasterSheet({ folderPath }) {
                           />
                         ) : (
                           <div className="flex items-center justify-between gap-1.5">
-                            <span>₹{inv.valuation.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                            <span>₹{Number(inv.valuation ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
                           </div>
                         )}
                       </td>
                       <td className="py-4 px-6 font-mono text-on-surface-variant">
-                        ₹{inv.fee_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        ₹{Number(inv.fee_amount ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="py-4 px-6 font-mono font-bold text-on-surface">
-                        ₹{inv.total_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        ₹{Number(inv.total_amount ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="py-4 px-6 text-center">
                         {cellLoading === inv.id ? (
@@ -635,12 +649,21 @@ export default function MasterSheet({ folderPath }) {
                       </td>
                       <td className="py-4 px-6 text-center">
                         {inv.is_paid === 1 ? (
-                          <button
-                            onClick={() => handleMarkUnpaid(inv.id)}
-                            className="inline-flex items-center gap-1 text-[10px] text-error hover:text-error-container font-semibold border border-error/20 bg-surface-lowest hover:bg-error/5 px-2.5 py-1 rounded transition-colors cursor-pointer"
-                          >
-                            Reset Payment
-                          </button>
+                          <div className="inline-flex items-center gap-2">
+                            <button
+                              onClick={() => handleMarkUnpaid(inv.id)}
+                              className="inline-flex items-center gap-1 text-[10px] text-error hover:text-error-container font-semibold border border-error/20 bg-surface-lowest hover:bg-error/5 px-2.5 py-1 rounded transition-colors cursor-pointer"
+                            >
+                              Reset Payment
+                            </button>
+                            <button
+                              onClick={() => handleStartEditInvoice(inv)}
+                              className="p-1 hover:bg-surface-container-high rounded text-on-surface-variant hover:text-primary transition-colors cursor-pointer"
+                              title="Edit Invoice Details"
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         ) : (
                           <div className="inline-flex items-center gap-2">
                             {editPaymentId === inv.id ? (
@@ -685,6 +708,13 @@ export default function MasterSheet({ folderPath }) {
                                 >
                                   <Calendar className="h-3.5 w-3.5" />
                                 </button>
+                                <button
+                                  onClick={() => handleStartEditInvoice(inv)}
+                                  className="p-1.5 hover:bg-surface-container-high rounded text-on-surface-variant hover:text-primary transition-colors cursor-pointer"
+                                  title="Edit Invoice Details"
+                                >
+                                  <Edit3 className="h-3.5 w-3.5" />
+                                </button>
                               </>
                             )}
                           </div>
@@ -706,6 +736,29 @@ export default function MasterSheet({ folderPath }) {
           </div>
         )}
       </div>
+
+      {/* Popups and Modals */}
+      <InvoiceEditModal
+        isOpen={isEditOpen}
+        onClose={() => {
+          setIsEditOpen(false);
+          setEditInvoice(null);
+        }}
+        invoice={editInvoice}
+        onSaved={fetchInvoices}
+      />
+
+      <EmailDraftModal
+        isOpen={draftOpen}
+        onClose={() => {
+          setDraftOpen(false);
+          setDraftEndpoint('');
+        }}
+        templateEndpoint={draftEndpoint}
+        defaultPayload={draftPayload}
+        onSent={fetchInvoices}
+      />
     </div>
   );
 }
+
