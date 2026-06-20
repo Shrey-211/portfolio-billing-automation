@@ -11,7 +11,8 @@ import {
   Building,
   Mail,
   MapPin,
-  FileText
+  FileText,
+  Trash2
 } from 'lucide-react';
 
 const INDIAN_STATES = [
@@ -34,6 +35,58 @@ export default function Workbench({ queue, setQueue, folderPath, setTab, importM
   const [selectedIdx, setSelectedIdx] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  
+  const [selectedQuarter, setSelectedQuarter] = useState('current');
+  const [customQuarter, setCustomQuarter] = useState('');
+
+  const calculateCurrentQuarter = () => {
+    const now = new Date();
+    const month = now.getMonth(); // 0 is Jan, 11 is Dec
+    const year = now.getFullYear();
+    
+    let q, fy;
+    if (month >= 3 && month <= 5) { // Apr - Jun
+      q = "Q1";
+      fy = `${year}-${(year + 1).toString().slice(-2)}`;
+    } else if (month >= 6 && month <= 8) { // Jul - Sep
+      q = "Q2";
+      fy = `${year}-${(year + 1).toString().slice(-2)}`;
+    } else if (month >= 9 && month <= 11) { // Oct - Dec
+      q = "Q3";
+      fy = `${year}-${(year + 1).toString().slice(-2)}`;
+    } else { // Jan - Mar
+      q = "Q4";
+      fy = `${year - 1}-${year.toString().slice(-2)}`;
+    }
+    return `${q} FY ${fy}`;
+  };
+
+  const getDynamicQuarters = () => {
+    const now = new Date();
+    const month = now.getMonth();
+    const year = now.getFullYear();
+    const currentFYStartYear = month < 3 ? year - 1 : year;
+    
+    const quarters = [];
+    const formatFY = (startYear) => {
+      return `${startYear}-${(startYear + 1).toString().slice(-2)}`;
+    };
+
+    // Current FY Quarters (Q4, Q3, Q2, Q1)
+    quarters.push(`Q4 FY ${formatFY(currentFYStartYear)}`);
+    quarters.push(`Q3 FY ${formatFY(currentFYStartYear)}`);
+    quarters.push(`Q2 FY ${formatFY(currentFYStartYear)}`);
+    quarters.push(`Q1 FY ${formatFY(currentFYStartYear)}`);
+
+    // Previous FY Quarters (Q4, Q3, Q2, Q1)
+    const prevFYStartYear = currentFYStartYear - 1;
+    quarters.push(`Q4 FY ${formatFY(prevFYStartYear)}`);
+    quarters.push(`Q3 FY ${formatFY(prevFYStartYear)}`);
+    quarters.push(`Q2 FY ${formatFY(prevFYStartYear)}`);
+    quarters.push(`Q1 FY ${formatFY(prevFYStartYear)}`);
+
+    return quarters;
+  };
   
   // Drawer form state
   const [formState, setFormState] = useState({
@@ -117,6 +170,10 @@ export default function Workbench({ queue, setQueue, folderPath, setTab, importM
       if (!confirmRun) return;
     }
 
+    const finalQuarter = selectedQuarter === 'current' 
+      ? calculateCurrentQuarter() 
+      : (selectedQuarter === 'custom' ? customQuarter : selectedQuarter);
+
     setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/api/batch/process`, {
@@ -125,6 +182,7 @@ export default function Workbench({ queue, setQueue, folderPath, setTab, importM
         body: JSON.stringify({
           folder_path: folderPath,
           import_mode: importMode,
+          quarter: finalQuarter,
           items: queue.map(q => ({
             filename: q.filename,
             client_name: q.client_name,
@@ -162,21 +220,74 @@ export default function Workbench({ queue, setQueue, folderPath, setTab, importM
   return (
     <div className="relative space-y-8 animate-fade-in z-10">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
         <div>
           <h2 className="text-3xl font-extrabold text-on-surface tracking-tight font-headline-xl">Active Billing Queue</h2>
           <p className="mt-1 text-sm text-on-surface-variant">Review, validate, and edit client billing metadata profiles before executing invoice creation.</p>
         </div>
         
         {queue.length > 0 && (
-          <button
-            onClick={handleStartProcess}
-            disabled={loading}
-            className="inline-flex items-center px-5 py-3 rounded-lg text-xs font-bold bg-primary text-on-primary hover:bg-primary/95 transition-all shadow-lg shadow-primary/10 cursor-pointer active:scale-95"
-          >
-            <Play className="mr-2 h-4 w-4 fill-current" />
-            Start Billing Engine
-          </button>
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-2">
+              <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider whitespace-nowrap">Quarter Tracking:</label>
+              <div className="relative">
+                <select
+                  value={selectedQuarter}
+                  onChange={(e) => {
+                    setSelectedQuarter(e.target.value);
+                    if (e.target.value !== 'custom') {
+                      setCustomQuarter('');
+                    }
+                  }}
+                  className="appearance-none bg-surface-lowest border border-[#232d3f]/40 rounded-lg pl-4 pr-10 py-2.5 text-xs text-on-surface font-semibold focus:outline-none focus:border-primary transition-colors cursor-pointer"
+                >
+                  <option value="current">Current ({calculateCurrentQuarter()})</option>
+                  {getDynamicQuarters().map((q) => (
+                    <option key={q} value={q}>{q}</option>
+                  ))}
+                  <option value="custom">Custom...</option>
+                </select>
+                <div className="absolute right-3 top-3 pointer-events-none text-on-surface-variant flex items-center justify-center">
+                  <svg className="h-4.5 w-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+            
+            {selectedQuarter === 'custom' && (
+              <input
+                type="text"
+                value={customQuarter}
+                onChange={(e) => setCustomQuarter(e.target.value)}
+                placeholder={`e.g. ${getDynamicQuarters()[4]}`}
+                required
+                className="bg-surface-lowest border border-[#232d3f]/40 rounded-lg px-3 py-2 text-xs text-on-surface font-semibold focus:outline-none focus:border-primary transition-all"
+              />
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                if (window.confirm("Are you sure you want to clear the entire billing queue?")) {
+                  setQueue([]);
+                }
+              }}
+              className="inline-flex items-center px-4 py-3 rounded-lg text-xs font-bold bg-surface-lowest border border-error/30 hover:border-error text-error hover:bg-error/5 transition-all cursor-pointer active:scale-95"
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Clear Queue
+            </button>
+
+            <button
+              onClick={handleStartProcess}
+              disabled={loading || (selectedQuarter === 'custom' && !customQuarter.trim())}
+              className="inline-flex items-center px-5 py-3 rounded-lg text-xs font-bold bg-primary text-on-primary hover:bg-primary/95 transition-all shadow-lg shadow-primary/10 cursor-pointer active:scale-95 disabled:opacity-50"
+            >
+              <Play className="mr-2 h-4 w-4 fill-current animate-pulse" />
+              Start Billing Engine
+            </button>
+          </div>
         )}
       </div>
 

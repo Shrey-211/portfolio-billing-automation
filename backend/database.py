@@ -63,7 +63,8 @@ def init_db(db_path=None):
         total_files INTEGER,
         processed_files INTEGER,
         failed_files INTEGER,
-        status TEXT
+        status TEXT,
+        quarter TEXT
     )
     """)
     
@@ -89,6 +90,7 @@ def init_db(db_path=None):
         payment_date TEXT,
         custom_message TEXT,
         invoice_number TEXT,
+        amount_paid REAL DEFAULT 0.0,
         FOREIGN KEY(batch_id) REFERENCES batches(id)
     )
     """)
@@ -126,6 +128,14 @@ def init_db(db_path=None):
         pass
     try:
         cursor.execute("ALTER TABLE job_items ADD COLUMN invoice_number TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE batches ADD COLUMN quarter TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE job_items ADD COLUMN amount_paid REAL DEFAULT 0.0")
     except sqlite3.OperationalError:
         pass
 
@@ -266,12 +276,12 @@ def save_client(client_data, db_path=None):
     conn.commit()
     conn.close()
 
-def create_batch(folder_path, total_files, db_path=None):
+def create_batch(folder_path, total_files, db_path=None, quarter=None):
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO batches (folder_path, total_files, processed_files, failed_files, status) VALUES (?, ?, 0, 0, 'Running')",
-        (folder_path, total_files)
+        "INSERT INTO batches (folder_path, total_files, processed_files, failed_files, status, quarter) VALUES (?, ?, 0, 0, 'Running', ?)",
+        (folder_path, total_files, quarter)
     )
     batch_id = cursor.lastrowid
     conn.commit()
@@ -300,18 +310,20 @@ def add_job_item(item_data, db_path=None):
         item_data["payment_date"] = None
     if "invoice_number" not in item_data:
         item_data["invoice_number"] = ""
+    if "amount_paid" not in item_data:
+        item_data["amount_paid"] = 0.0
         
     cursor.execute("""
     INSERT INTO job_items (
         batch_id, filename, client_name, valuation, fee_amount, 
         cgst, sgst, igst, total_amount, status, error_msg, 
         portfolio_pdf_path, invoice_pdf_path, email_status, custom_message,
-        is_paid, payment_date, invoice_number
+        is_paid, payment_date, invoice_number, amount_paid
     ) VALUES (
         :batch_id, :filename, :client_name, :valuation, :fee_amount, 
         :cgst, :sgst, :igst, :total_amount, :status, :error_msg, 
         :portfolio_pdf_path, :invoice_pdf_path, :email_status, :custom_message,
-        :is_paid, :payment_date, :invoice_number
+        :is_paid, :payment_date, :invoice_number, :amount_paid
     )
     """, item_data)
     item_id = cursor.lastrowid
@@ -337,6 +349,7 @@ def get_batch_items(batch_id, db_path=None):
     cursor.execute("""
         SELECT 
             j.*,
+            b.quarter,
             COALESCE(c.email, '')       AS email,
             COALESCE(c.cc_email, '')    AS cc_email,
             COALESCE(c.address, '')     AS address,
@@ -345,6 +358,7 @@ def get_batch_items(batch_id, db_path=None):
             COALESCE(c.client_type, '') AS client_type
         FROM job_items j
         LEFT JOIN clients c ON j.client_name = c.client_name
+        LEFT JOIN batches b ON j.batch_id = b.id
         WHERE j.batch_id = ?
     """, (batch_id,))
     items = [dict(row) for row in cursor.fetchall()]
@@ -365,6 +379,7 @@ def get_all_job_items(limit=1000, db_path=None):
     cursor.execute("""
         SELECT 
             j.*,
+            b.quarter,
             COALESCE(c.email, '')       AS email,
             COALESCE(c.cc_email, '')    AS cc_email,
             COALESCE(c.address, '')     AS address,
@@ -373,18 +388,19 @@ def get_all_job_items(limit=1000, db_path=None):
             COALESCE(c.client_type, '') AS client_type
         FROM job_items j
         LEFT JOIN clients c ON j.client_name = c.client_name
+        LEFT JOIN batches b ON j.batch_id = b.id
         ORDER BY j.id DESC LIMIT ?
     """, (limit,))
     items = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return items
 
-def update_payment_status(item_id, is_paid, payment_date=None, db_path=None):
+def update_payment_status(item_id, is_paid, payment_date=None, amount_paid=0.0, db_path=None):
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "UPDATE job_items SET is_paid = ?, payment_date = ? WHERE id = ?",
-        (is_paid, payment_date, item_id)
+        "UPDATE job_items SET is_paid = ?, payment_date = ?, amount_paid = ? WHERE id = ?",
+        (is_paid, payment_date, amount_paid, item_id)
     )
     conn.commit()
     conn.close()

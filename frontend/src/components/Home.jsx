@@ -200,26 +200,14 @@ export default function Home({ setTab, setQueue, setFolderPath, folderPath, queu
             ) : (
               <div className="space-y-3">
                 <button
-                  onClick={handleSelectFolder}
+                  onClick={handleSelectExcelSheet}
                   disabled={loading}
                   className="w-full bg-primary text-on-primary hover:bg-primary/90 py-3 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-primary/10 cursor-pointer active:scale-95 disabled:opacity-50"
                 >
                   {loading ? 'Opening Dialog...' : (
                     <>
                       <FolderOpen className="h-4 w-4" />
-                      Scan Folder (Multi-file)
-                    </>
-                  )}
-                </button>
-                <button
-                  onClick={handleSelectExcelSheet}
-                  disabled={loading}
-                  className="w-full bg-surface-lowest text-on-surface hover:bg-surface-container-high py-3 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all border border-outline-variant/30 cursor-pointer active:scale-95 disabled:opacity-50"
-                >
-                  {loading ? 'Opening Dialog...' : (
-                    <>
-                      <FolderOpen className="h-4 w-4 text-primary" />
-                      Import Billing Sheet (Single-sheet)
+                      Import Billing Sheet
                     </>
                   )}
                 </button>

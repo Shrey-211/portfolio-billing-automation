@@ -4,6 +4,72 @@ import openpyxl
 import backend.database as database
 import backend.processing as processing
 
+def create_test_excel_files_if_missing(test_dir):
+    import openpyxl
+    os.makedirs(test_dir, exist_ok=True)
+    
+    files = {
+        "alpha_investors.xlsx": {
+            "name": "Alpha Investors",
+            "valuation": 8500000.0,
+            "state": "Maharashtra"
+        },
+        "beta_capital.xlsx": {
+            "name": "Beta Capital",
+            "valuation": 24000000.0,
+            "state": "Delhi"
+        },
+        "gamma_trust.xlsx": {
+            "name": "Gamma Trust",
+            "valuation": 65000000.0,
+            "state": "Maharashtra"
+        }
+    }
+    
+    for filename, data in files.items():
+        path = os.path.join(test_dir, filename)
+        if os.path.exists(path):
+            continue
+            
+        print(f"Creating mock test Excel file: {filename}")
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Metadata"
+        
+        meta_rows = [
+            ("client_name", data["name"]),
+            ("client_type", "Type 1"),
+            ("state", data["state"]),
+            ("email", f"{data['name'].lower().replace(' ', '_')}@test.com"),
+            ("cc_email", "cc@test.com"),
+            ("address", f"123 Billing Rd, {data['state']}"),
+            ("gstin", "27AAACA1234A1Z0" if data["state"] == "Maharashtra" else "07AAACA1234A1Z0"),
+            ("other", "placeholder"),
+            ("valuation", data["valuation"])
+        ]
+        
+        for r_idx, (k, v) in enumerate(meta_rows, 1):
+            ws.cell(row=r_idx, column=1, value=k)
+            ws.cell(row=r_idx, column=2, value=v)
+            
+        ws_hold = wb.create_sheet("Holdings")
+        ws_hold.cell(row=1, column=1, value="Holdings Report")
+        ws_hold.cell(row=4, column=1, value="Asset")
+        ws_hold.cell(row=4, column=2, value="Units")
+        ws_hold.cell(row=4, column=3, value="Price")
+        ws_hold.cell(row=4, column=4, value="Value")
+        
+        ws_hold.cell(row=5, column=1, value="Equity Fund A")
+        ws_hold.cell(row=5, column=2, value=1000)
+        ws_hold.cell(row=5, column=3, value=100)
+        ws_hold.cell(row=5, column=4, value="=B5*C5")
+        
+        ws_hold.cell(row=6, column=1, value="Total")
+        ws_hold.cell(row=6, column=4, value="=D5")
+        
+        wb.save(path)
+        wb.close()
+
 def test_backend_pipeline():
     print("=== STARTING BACKEND PIPELINE TEST ===")
     
@@ -31,6 +97,8 @@ def test_backend_pipeline():
         
     # 2. Scan generated portfolios
     test_dir = os.path.abspath("test_data")
+    create_test_excel_files_if_missing(test_dir)
+    
     files_to_test = [
         os.path.join(test_dir, "alpha_investors.xlsx"),
         os.path.join(test_dir, "beta_capital.xlsx"),

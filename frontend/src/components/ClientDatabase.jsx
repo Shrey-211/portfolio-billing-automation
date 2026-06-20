@@ -392,8 +392,10 @@ export default function ClientDatabase() {
                                 <td className="py-3 px-2 text-center">
                                   {inv.is_paid === 1 ? (
                                     <span className="inline-flex items-center gap-0.5 text-secondary text-[10px] font-bold"><CheckCircle className="h-3 w-3" /> Paid</span>
+                                  ) : inv.is_paid === 2 ? (
+                                    <span className="inline-flex items-center gap-0.5 text-amber-400 text-[10px] font-bold"><Clock className="h-3 w-3 animate-pulse" /> Partial</span>
                                   ) : (
-                                    <span className="inline-flex items-center gap-0.5 text-amber-500 text-[10px] font-bold"><Clock className="h-3 w-3" /> Due</span>
+                                    <span className="inline-flex items-center gap-0.5 text-error text-[10px] font-bold"><Clock className="h-3 w-3" /> Due</span>
                                   )}
                                 </td>
                                 <td className="py-3 px-2 text-right">

@@ -95,6 +95,7 @@ class BatchProcessRequest(BaseModel):
     folder_path: str
     items: List[FileItemToProcess]
     import_mode: str = "folder"
+    quarter: Optional[str] = None
 
 
 class EmailSendRequest(BaseModel):
@@ -426,7 +427,7 @@ def read_calculated_values_from_excel(excel_path, client_name):
     return None
 
 # --- BATCH RUN PROCESSOR ---
-def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode: str = "folder"):
+def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode: str = "folder", quarter: Optional[str] = None):
     global PROGRESS_STATE
     total = len(items)
     completed = 0
@@ -443,7 +444,7 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
     
     # 1. Create Batch
     try:
-        batch_id = database.create_batch(folder_path, total)
+        batch_id = database.create_batch(folder_path, total, quarter=quarter)
         PROGRESS_STATE["batch_id"] = batch_id
         log_progress(f"Created batch record #{batch_id} in SQLite database.", "info")
     except Exception as e:
@@ -790,7 +791,7 @@ def start_batch_processing(payload: BatchProcessRequest, background_tasks: Backg
         "logs": [],
         "batch_id": None
     }
-    background_tasks.add_task(run_batch_thread, payload.folder_path, items_dict, payload.import_mode)
+    background_tasks.add_task(run_batch_thread, payload.folder_path, items_dict, payload.import_mode, payload.quarter)
     return {"status": "started"}
 
 @app.get("/api/batch/progress")
@@ -1080,11 +1081,32 @@ def get_all_invoices():
 class PaymentUpdatePayload(BaseModel):
     is_paid: int
     payment_date: Optional[str] = None
+    amount_paid: Optional[float] = 0.0
 
 @app.post("/api/invoices/{item_id}/payment")
 def update_payment(item_id: int, payload: PaymentUpdatePayload):
     try:
-        database.update_payment_status(item_id, payload.is_paid, payload.payment_date)
+        # Determine is_paid status dynamically based on amount_paid vs total_amount
+        conn = database.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT total_amount FROM job_items WHERE id = ?", (item_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="Invoice record not found")
+            
+        total_amount = row["total_amount"]
+        amount_paid = payload.amount_paid if payload.amount_paid is not None else 0.0
+        
+        if amount_paid == 0.0:
+            is_paid_status = 0
+        elif amount_paid >= total_amount:
+            is_paid_status = 1
+        else:
+            is_paid_status = 2  # Partially paid
+            
+        database.update_payment_status(item_id, is_paid_status, payload.payment_date, amount_paid)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1249,6 +1271,9 @@ def export_billing_ledger(payload: Dict[str, str]):
         import pandas as pd
         data = []
         for r in rows:
+            is_paid_val = r["is_paid"]
+            pay_status = "Paid (Full)" if is_paid_val == 1 else ("Paid (Partial)" if is_paid_val == 2 else "Unpaid")
+            
             data.append({
                 "Invoice ID": r["id"],
                 "Client Name": r["client_name"],
@@ -1260,7 +1285,8 @@ def export_billing_ledger(payload: Dict[str, str]):
                 "Total Invoice Value (INR)": r["total_amount"],
                 "Generation Status": r["status"],
                 "Email Status": r["email_status"],
-                "Payment Status": "Paid" if r["is_paid"] == 1 else "Unpaid",
+                "Payment Status": pay_status,
+                "Amount Paid (INR)": r.get("amount_paid", 0.0),
                 "Payment Received Date": r["payment_date"] or ""
             })
             
@@ -1303,11 +1329,11 @@ def export_billing_ledger(payload: Dict[str, str]):
                         cell.font = header_font
                         cell.alignment = align_center
                     else:
-                        if cell.column in [3, 4, 5, 6, 7, 8]:
+                        if cell.column in [3, 4, 5, 6, 7, 8, 12]:
                             cell.alignment = align_right
                             if cell.value is not None:
                                 cell.number_format = '₹#,##0.00'
-                        elif cell.column in [1, 9, 10, 11, 12]:
+                        elif cell.column in [1, 9, 10, 11, 13]:
                             cell.alignment = align_center
                         else:
                             cell.alignment = align_left
@@ -1423,7 +1449,8 @@ def get_payment_template(item_id: int):
         "InvoiceNumber": invoice_code,
         "TotalAmount": total_amt_val,
         "PaymentDate": payment_date_val,
-        "CustomMessage": item.get("custom_message", "") or ""
+        "CustomMessage": item.get("custom_message", "") or "",
+        "AmountPaid": float(item.get("amount_paid", 0.0) or 0.0)
     }
     
     try:

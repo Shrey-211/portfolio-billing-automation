@@ -512,6 +512,11 @@ export default function Results({ batchId, setBatchId }) {
               <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-primary/15 text-primary border border-primary/25">
                 Created: {new Date(activeBatch.timestamp.replace(' ', 'T')).toLocaleString()}
               </span>
+              {activeBatch.quarter && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/15 text-indigo-400 border border-indigo-500/25">
+                  Quarter: {activeBatch.quarter}
+                </span>
+              )}
               <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-secondary/15 text-secondary border border-secondary/25">
                 Passed: {activeBatch.processed_files}
               </span>
