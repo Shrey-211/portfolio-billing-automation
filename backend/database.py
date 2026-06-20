@@ -156,8 +156,12 @@ def init_db(db_path=None):
             "email_smtp_user": "",
             "email_smtp_pass": "",  # To be stored encrypted in real environments
             "email_smtp_tls": "starttls",  # "starttls" | "ssl" | "none"
+            "email_default_cc": "",  # Global CC pre-filled on every outgoing email
+            "email_qr_path": "",  # Path to QR code image attached to every email
             "email_subject_template": "Portfolio Performance Report & Invoice - {ClientName}",
             "email_body_template": "Dear {ClientName},\n\nPlease find attached your Portfolio Performance Report and GST Invoice ({InvoiceNumber}) for the period.\n\nPortfolio Valuation: INR {Valuation:,.2f}\nTotal Fees (incl. GST): INR {TotalAmount:,.2f}\n\nBest Regards,\nAntigravity Wealth Management",
+            "payment_subject_template": "Payment Confirmation - {ClientName} ({InvoiceNumber})",
+            "payment_body_template": "Dear {ClientName},\n\nThank you for your payment of INR {TotalAmount:,.2f} against Invoice {InvoiceNumber}.\n\nYour payment has been received and recorded. Please find attached the payment confirmation for your records.\n\nBest Regards,\nAntigravity Wealth Management",
             "taxable_amt_formula": "Value * Rate / 4"
         }
         for key, val in default_settings.items():
@@ -167,6 +171,13 @@ def init_db(db_path=None):
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('taxable_amt_formula', 'Value * Rate / 4')")
     # Ensure email_smtp_tls is present in older databases
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('email_smtp_tls', 'starttls')")
+    # Ensure email_default_cc is present in older databases
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('email_default_cc', '')")
+    # Ensure email_qr_path is present in older databases
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('email_qr_path', '')")
+    # Ensure payment templates are present in older databases
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_subject_template', 'Payment Confirmation - {ClientName} ({InvoiceNumber})')")
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_body_template', 'Dear {ClientName},\n\nThank you for your payment of INR {TotalAmount:,.2f} against Invoice {InvoiceNumber}.\n\nYour payment has been received and recorded. Please find the attached confirmation for your records.\n\nBest Regards,\nAntigravity Wealth Management')")
 
     # Populate Default Fee Rules if empty
     cursor.execute("SELECT COUNT(*) FROM fee_rules")

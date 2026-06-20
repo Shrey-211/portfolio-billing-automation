@@ -893,6 +893,10 @@ def run_email_thread(item_ids: List[int]):
             attachments.append(item["portfolio_pdf_path"])
         if item["invoice_pdf_path"] and os.path.exists(item["invoice_pdf_path"]):
             attachments.append(item["invoice_pdf_path"])
+        # Append global QR code if configured
+        qr_path = settings.get("email_qr_path", "").strip()
+        if qr_path and os.path.exists(qr_path):
+            attachments.append(qr_path)
             
         if not attachments:
             EMAIL_STATE["failed"] += 1
@@ -1402,19 +1406,39 @@ def get_payment_template(item_id: int):
     settings = database.get_all_settings()
     
     invoice_code = item["invoice_number"] or f"{settings.get('invoice_prefix', 'INV-2026-')}{item_id:04d}"
-    
     total_amt_val = float(item["total_amount"]) if item["total_amount"] is not None else 0.0
-    subject = f"Payment Received: Invoice {invoice_code} - {client_name}"
-    body = (
-        f"Dear {client_name},\n\n"
-        f"We have successfully received your payment of INR {total_amt_val:,.2f} "
-        f"towards Invoice {invoice_code} on {item['payment_date'] or datetime.today().strftime('%Y-%m-%d')}.\n\n"
-        f"Thank you for your business.\n\n"
-        f"Best Regards,\n"
-        f"{settings.get('company_name', 'Antigravity Wealth Management')}"
-    )
-
+    payment_date_val = item.get("payment_date") or datetime.today().strftime('%Y-%m-%d')
     
+    subject_template = settings.get("payment_subject_template", "Payment Confirmation - {ClientName} ({InvoiceNumber})")
+    body_template = settings.get("payment_body_template", (
+        "Dear {ClientName},\n\n"
+        "Thank you for your payment of INR {TotalAmount:,.2f} against Invoice {InvoiceNumber}.\n\n"
+        "Your payment has been received and recorded. Please find the attached confirmation for your records.\n\n"
+        "Best Regards,\n"
+        "Antigravity Wealth Management"
+    ))
+    
+    context = {
+        "ClientName": client_name,
+        "InvoiceNumber": invoice_code,
+        "TotalAmount": total_amt_val,
+        "PaymentDate": payment_date_val,
+        "CustomMessage": item.get("custom_message", "") or ""
+    }
+    
+    try:
+        subject = subject_template.format(**context)
+        body = body_template.format(**context)
+        custom_msg = item.get("custom_message", "")
+        if custom_msg and "{CustomMessage}" not in body_template:
+            if "Best Regards" in body:
+                body = body.replace("Best Regards", f"{custom_msg}\n\nBest Regards")
+            else:
+                body = f"{body}\n\n{custom_msg}"
+    except Exception as e:
+        subject = subject_template
+        body = body_template
+        
     attachments = []
     if item["invoice_pdf_path"] and os.path.exists(item["invoice_pdf_path"]):
         attachments.append(item["invoice_pdf_path"])
@@ -1529,6 +1553,50 @@ def select_pdf_file():
         print(f"Error selecting PDF file: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     return {"file_path": file_path}
+
+@app.post("/api/settings/select-qr")
+def select_qr_image():
+    """Open a native file picker for an image, save path to email_qr_path setting."""
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.wm_attributes('-topmost', 1)
+        selected = filedialog.askopenfilename(
+            title="Select QR Code Image",
+            filetypes=[
+                ("Image Files", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"),
+                ("All Files", "*.*")
+            ]
+        )
+        root.destroy()
+        if not selected:
+            return {"qr_path": ""}
+        qr_path = os.path.normpath(selected)
+        database.save_setting("email_qr_path", qr_path)
+        return {"qr_path": qr_path}
+    except Exception as e:
+        print(f"Error selecting QR image: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/settings/clear-qr")
+def clear_qr_image():
+    """Remove the configured QR code image."""
+    database.save_setting("email_qr_path", "")
+    return {"status": "cleared"}
+
+@app.get("/api/settings/qr-preview")
+def get_qr_preview():
+    """Return the QR code image as a base64 data URI for preview."""
+    import base64
+    qr_path = database.get_setting("email_qr_path") or ""
+    if not qr_path or not os.path.exists(qr_path):
+        return {"data_uri": "", "filename": ""}
+    ext = os.path.splitext(qr_path)[1].lower().lstrip(".")
+    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "gif": "image/gif", "bmp": "image/bmp", "webp": "image/webp"}.get(ext, "image/png")
+    with open(qr_path, "rb") as f:
+        data = base64.b64encode(f.read()).decode()
+    return {"data_uri": f"data:{mime};base64,{data}", "filename": os.path.basename(qr_path)}
 
 @app.get("/api/email/history")
 def get_email_history():

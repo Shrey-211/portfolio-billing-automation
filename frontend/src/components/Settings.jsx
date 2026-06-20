@@ -15,6 +15,11 @@ import {
   AlertCircle,
   SendHorizonal,
   Loader2,
+  ImageIcon,
+  QrCode,
+  X,
+  FileText,
+  CheckCircle2,
 } from 'lucide-react';
 
 const TABS = [
@@ -23,6 +28,20 @@ const TABS = [
   { id: 'smtp',        label: 'Mail Server',         icon: Mail     },
   { id: 'templates',   label: 'Email Templates',     icon: Info     },
 ];
+
+/* ─── Stable helpers — defined OUTSIDE the component so React never
+       treats them as new component types on re-render (fixes focus loss) ─── */
+const inputCls = "w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2.5 text-xs text-on-surface focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all";
+const readCls  = "w-full bg-surface-lowest/20 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-xs text-on-surface/85";
+
+function Field({ label, children }) {
+  return (
+    <div className="space-y-2">
+      {label && <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">{label}</label>}
+      {children}
+    </div>
+  );
+}
 
 export default function Settings() {
   const [activeTab, setActiveTab]   = useState('company');
@@ -33,6 +52,9 @@ export default function Settings() {
 
   const [profileLocked, setProfileLocked]   = useState(true);
   const [showLegacySlabs, setShowLegacySlabs] = useState(false);
+  const [templateTab, setTemplateTab]        = useState('invoice'); // 'invoice' | 'payment'
+  const [qrPreview, setQrPreview]            = useState(null); // { data_uri, filename } | null
+
 
   const [testEmailAddr,   setTestEmailAddr]   = useState('');
   const [testEmailStatus, setTestEmailStatus] = useState(null);
@@ -129,12 +151,39 @@ export default function Settings() {
     }
   };
 
-  /* ─── field helper ─── */
-  const Field = ({ label, children }) => (
-    <div className="space-y-2">{label && <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">{label}</label>}{children}</div>
-  );
-  const inputCls = "w-full bg-surface-lowest/50 border border-outline-variant/30 rounded-lg px-4 py-2.5 text-xs text-on-surface focus:outline-none focus:border-primary/80 focus:ring-1 focus:ring-primary/80 transition-all";
-  const readCls  = "w-full bg-surface-lowest/20 border border-outline-variant/10 rounded-lg px-4 py-2.5 text-xs text-on-surface/85";
+  const loadQrPreview = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/settings/qr-preview`);
+      if (res.ok) {
+        const data = await res.json();
+        setQrPreview(data.data_uri ? data : null);
+      }
+    } catch { /* silent */ }
+  };
+
+  const selectQr = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/settings/select-qr`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.qr_path) {
+          setSettings(prev => ({ ...prev, email_qr_path: data.qr_path }));
+          await loadQrPreview();
+        }
+      }
+    } catch (err) { console.error('QR select error:', err); }
+  };
+
+  const clearQr = async () => {
+    try {
+      await fetch(`${API_BASE}/api/settings/clear-qr`, { method: 'POST' });
+      setSettings(prev => ({ ...prev, email_qr_path: '' }));
+      setQrPreview(null);
+    } catch (err) { console.error('QR clear error:', err); }
+  };
+
+  // Load QR preview on mount
+  useEffect(() => { loadQrPreview(); }, []);
 
   /* ─── tab panels ─── */
   const panels = {
@@ -410,29 +459,169 @@ export default function Settings() {
     /* ── 4. Email Templates ── */
     templates: (
       <div className="space-y-6 animate-fade-in">
+        {/* Header */}
         <div>
-          <p className="text-sm font-bold text-on-surface">Email Template Layout</p>
-          <p className="text-[11px] text-on-surface-variant mt-0.5">Customize the subject and body of outbound invoice emails using dynamic placeholders.</p>
+          <p className="text-sm font-bold text-on-surface">Email Templates</p>
+          <p className="text-[11px] text-on-surface-variant mt-0.5">Configure the subject and body for each type of outbound email.</p>
         </div>
 
-        <Field label="Subject Line Template">
-          <input type="text" name="email_subject_template" value={settings.email_subject_template || ''} onChange={handleSettingChange} className={inputCls} />
-        </Field>
+        {/* Sub-tabs */}
+        <div className="flex gap-1 bg-surface-lowest/40 border border-outline-variant/20 rounded-lg p-1">
+          {[
+            { id: 'invoice',  icon: FileText,      label: 'Invoice & Report Email' },
+            { id: 'payment',  icon: CheckCircle2,  label: 'Payment Confirmation' },
+          ].map(({ id, icon: Icon, label }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTemplateTab(id)}
+              className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
+                templateTab === id
+                  ? 'bg-primary text-on-primary shadow-md shadow-primary/30'
+                  : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-lowest/60'
+              }`}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {label}
+            </button>
+          ))}
+        </div>
 
-        <Field label="Body Layout Message">
-          <textarea name="email_body_template" value={settings.email_body_template || ''} onChange={handleSettingChange} rows="10" className={inputCls + ' resize-none leading-relaxed'} />
-        </Field>
+        {/* Invoice Template */}
+        {templateTab === 'invoice' && (
+          <div className="space-y-5 animate-fade-in">
+            <Field label="Subject Line">
+              <input
+                type="text"
+                name="email_subject_template"
+                value={settings.email_subject_template || ''}
+                onChange={handleSettingChange}
+                placeholder="Portfolio Performance Report & Invoice - {ClientName}"
+                className={inputCls}
+              />
+            </Field>
+            <Field label="Body">
+              <textarea
+                name="email_body_template"
+                value={settings.email_body_template || ''}
+                onChange={handleSettingChange}
+                rows="10"
+                className={inputCls + ' resize-none leading-relaxed'}
+              />
+            </Field>
+            <div className="p-3.5 bg-surface-lowest/40 rounded-lg border border-outline-variant/20 space-y-2">
+              <p className="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant">Available Placeholders</p>
+              <div className="flex flex-wrap gap-1.5">
+                {['{ClientName}', '{InvoiceNumber}', '{Valuation}', '{FeeAmount}', '{TotalAmount}', '{CustomMessage}'].map(p => (
+                  <code key={p} className="text-[10px] text-primary font-mono font-semibold bg-surface-lowest/60 px-2 py-0.5 rounded border border-outline-variant/10">{p}</code>
+                ))}
+              </div>
+            </div>
 
-        <div className="p-4 bg-surface-lowest/40 rounded-lg border border-outline-variant/20 space-y-3">
-          <p className="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant">Available Placeholders</p>
-          <div className="flex flex-wrap gap-2">
-            {['{ClientName}', '{InvoiceNumber}', '{Valuation}', '{FeeAmount}', '{TotalAmount}', '{CustomMessage}'].map(p => (
-              <code key={p} className="text-[10px] text-primary font-mono font-semibold bg-surface-lowest/60 px-2 py-1 rounded border border-outline-variant/10">{p}</code>
-            ))}
+            {/* QR Code — invoice emails only */}
+            <div className="border-t border-outline-variant/20 pt-5 space-y-3">
+              <div className="flex items-center gap-2">
+                <QrCode className="h-4 w-4 text-primary" />
+                <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Payment QR Code</p>
+                <span className="ml-auto text-[9px] text-on-surface-variant/50 italic">Invoice emails only</span>
+              </div>
+              <p className="text-[9.5px] text-on-surface-variant">Attach your UPI / bank QR code to every invoice email so clients can pay directly.</p>
+
+              {qrPreview ? (
+                <div className="flex items-start gap-4 p-4 bg-surface-lowest/30 border border-outline-variant/20 rounded-lg">
+                  <img
+                    src={qrPreview.data_uri}
+                    alt="QR Code"
+                    className="w-20 h-20 object-contain rounded-lg border border-outline-variant/30 bg-white/5 flex-shrink-0"
+                  />
+                  <div className="flex-1 min-w-0 space-y-2">
+                    <p className="text-xs font-semibold text-on-surface truncate">{qrPreview.filename}</p>
+                    <p className="text-[9.5px] text-emerald-400 flex items-center gap-1">
+                      <Check className="h-3 w-3" /> Attached to invoice emails only
+                    </p>
+                    <div className="flex gap-2 pt-1">
+                      <button type="button" onClick={selectQr} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-bold bg-primary/15 text-primary border border-primary/25 hover:bg-primary/25 transition-all cursor-pointer">
+                        <ImageIcon className="h-3 w-3" /> Change Image
+                      </button>
+                      <button type="button" onClick={clearQr} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-bold bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-all cursor-pointer">
+                        <X className="h-3 w-3" /> Remove
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={selectQr}
+                  className="w-full flex flex-col items-center justify-center gap-2 p-6 border border-dashed border-outline-variant/40 rounded-lg hover:border-primary/50 hover:bg-primary/5 transition-all cursor-pointer group"
+                >
+                  <QrCode className="h-8 w-8 text-on-surface-variant/40 group-hover:text-primary/60 transition-colors" />
+                  <p className="text-xs font-semibold text-on-surface-variant group-hover:text-on-surface transition-colors">Click to select QR code image</p>
+                  <p className="text-[9.5px] text-on-surface-variant/60">PNG, JPG, WEBP supported</p>
+                </button>
+              )}
+            </div>
           </div>
+        )}
+
+        {/* Payment Confirmation Template */}
+        {templateTab === 'payment' && (
+          <div className="space-y-5 animate-fade-in">
+            <div className="flex items-start gap-3 p-3.5 bg-emerald-500/5 border border-emerald-500/20 rounded-lg">
+              <CheckCircle2 className="h-4 w-4 text-emerald-400 mt-0.5 flex-shrink-0" />
+              <p className="text-[11px] text-on-surface-variant leading-relaxed">
+                This email is sent to the client after payment is received. It can be triggered manually from the <strong>Delivery</strong> screen per client.
+              </p>
+            </div>
+            <Field label="Subject Line">
+              <input
+                type="text"
+                name="payment_subject_template"
+                value={settings.payment_subject_template || ''}
+                onChange={handleSettingChange}
+                placeholder="Payment Confirmation - {ClientName} ({InvoiceNumber})"
+                className={inputCls}
+              />
+            </Field>
+            <Field label="Body">
+              <textarea
+                name="payment_body_template"
+                value={settings.payment_body_template || ''}
+                onChange={handleSettingChange}
+                rows="10"
+                className={inputCls + ' resize-none leading-relaxed'}
+              />
+            </Field>
+            <div className="p-3.5 bg-surface-lowest/40 rounded-lg border border-outline-variant/20 space-y-2">
+              <p className="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant">Available Placeholders</p>
+              <div className="flex flex-wrap gap-1.5">
+                {['{ClientName}', '{InvoiceNumber}', '{TotalAmount}', '{PaymentDate}', '{CustomMessage}'].map(p => (
+                  <code key={p} className="text-[10px] text-primary font-mono font-semibold bg-surface-lowest/60 px-2 py-0.5 rounded border border-outline-variant/10">{p}</code>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Shared Settings (CC only) ── */}
+        <div className="border-t border-outline-variant/30 pt-6 space-y-2">
+          <Field label="Default CC Emails (pre-filled in all outgoing emails)">
+            <input
+              type="text"
+              name="email_default_cc"
+              value={settings.email_default_cc || ''}
+              onChange={handleSettingChange}
+              placeholder="accounts@company.com, manager@company.com"
+              className={inputCls}
+            />
+          </Field>
+          <p className="text-[9.5px] text-on-surface-variant">
+            Separate multiple addresses with commas. Applied to <strong>every</strong> email (both templates). Client-specific CC is appended on top.
+          </p>
         </div>
       </div>
     ),
+
   };
 
   return (

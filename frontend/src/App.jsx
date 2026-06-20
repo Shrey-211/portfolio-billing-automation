@@ -89,8 +89,8 @@ function App() {
               </div>
               {!isCollapsed && (
                 <div className="animate-fade-in">
-                  <span className="text-lg font-extrabold text-primary tracking-wide block">AlphaBilling</span>
-                  <span className="block text-[10px] text-on-surface-variant uppercase tracking-widest opacity-70">Elite Portfolio Management</span>
+                  <span className="text-lg font-extrabold text-primary tracking-wide block">Cedrus Consultants</span>
+                  <span className="block text-[10px] text-on-surface-variant uppercase tracking-widest opacity-70">Portfolio Management</span>
                 </div>
               )}
             </div>
@@ -151,8 +151,8 @@ function App() {
             </div>
             {!isCollapsed && (
               <div className="min-w-0 flex-1 animate-fade-in">
-                <p className="text-xs font-semibold text-on-surface truncate">Advisor Console</p>
-                <p className="text-[9px] text-on-surface-variant truncate font-mono uppercase tracking-wider opacity-60">Antigravity Wealth</p>
+                <p className="text-xs font-semibold text-on-surface truncate">Admin Console</p>
+                <p className="text-[9px] text-on-surface-variant truncate font-mono uppercase tracking-wider opacity-60">Cedrus Consultants Pvt Ltd</p>
               </div>
             )}
           </div>
