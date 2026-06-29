@@ -200,11 +200,12 @@ export default function MasterSheet({ folderPath }) {
     }, 4000);
   };
 
-  const handlePaymentRecorded = (id, pDate, amtPaid) => {
+  const handlePaymentRecorded = (id, pDate, amtPaid, credApplied = 0) => {
     setInvoices(prev => prev.map(inv => {
       if (inv.id === id) {
-        const is_paid_status = amtPaid === 0 ? 0 : (amtPaid >= inv.total_amount ? 1 : 2);
-        return { ...inv, is_paid: is_paid_status, payment_date: pDate, amount_paid: amtPaid };
+        const effective = amtPaid + credApplied;
+        const is_paid_status = effective === 0 ? 0 : (effective >= inv.total_amount ? 1 : 2);
+        return { ...inv, is_paid: is_paid_status, payment_date: pDate, amount_paid: amtPaid, credit_applied: credApplied };
       }
       return inv;
     }));
@@ -228,14 +229,15 @@ export default function MasterSheet({ folderPath }) {
         body: JSON.stringify({
           is_paid: 0,
           payment_date: null,
-          amount_paid: 0.0
+          amount_paid: 0.0,
+          credit_applied: 0.0
         })
       });
 
       if (res.ok) {
         setInvoices(prev => prev.map(inv => {
           if (inv.id === id) {
-            return { ...inv, is_paid: 0, payment_date: null, amount_paid: 0.0 };
+            return { ...inv, is_paid: 0, payment_date: null, amount_paid: 0.0, credit_applied: 0.0 };
           }
           return inv;
         }));
@@ -547,8 +549,13 @@ export default function MasterSheet({ folderPath }) {
                       <td className="py-4 px-6 font-mono text-on-surface-variant">
                         ₹{Number(inv.fee_amount ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
-                      <td className="py-4 px-6 font-mono font-bold text-on-surface">
-                        ₹{Number(inv.total_amount ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      <td className="py-4 px-6 font-mono text-on-surface">
+                        <div className="font-bold">₹{Number(inv.total_amount ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        {inv.credit_applied > 0 && (
+                          <div className="text-[10px] text-secondary font-medium mt-0.5">
+                            - ₹{Number(inv.credit_applied).toLocaleString('en-IN', { minimumFractionDigits: 2 })} Credit
+                          </div>
+                        )}
                       </td>
                       <td className="py-4 px-6 text-center">
                         {cellLoading === inv.id ? (
@@ -629,6 +636,9 @@ export default function MasterSheet({ folderPath }) {
                             {inv.amount_paid > 0 && (
                               <span className="block text-[9px] text-on-surface-variant font-mono">₹{Number(inv.amount_paid).toLocaleString('en-IN')}</span>
                             )}
+                            {inv.credit_applied > 0 && (
+                              <span className="block text-[9px] text-secondary font-medium font-mono">Credit: ₹{Number(inv.credit_applied).toLocaleString('en-IN')}</span>
+                            )}
                             <span className="block text-[8px] text-on-surface-variant font-mono opacity-60">{inv.payment_date}</span>
                           </div>
                         ) : inv.is_paid === 2 ? (
@@ -638,6 +648,9 @@ export default function MasterSheet({ folderPath }) {
                               Received (Partial)
                             </span>
                             <span className="block text-[9px] text-on-surface-variant font-mono">₹{Number(inv.amount_paid).toLocaleString('en-IN')} / ₹{Number(inv.total_amount).toLocaleString('en-IN')}</span>
+                            {inv.credit_applied > 0 && (
+                              <span className="block text-[9px] text-secondary font-medium font-mono">Credit: ₹{Number(inv.credit_applied).toLocaleString('en-IN')}</span>
+                            )}
                             <span className="block text-[8px] text-on-surface-variant font-mono opacity-60">{inv.payment_date}</span>
                           </div>
                         ) : (

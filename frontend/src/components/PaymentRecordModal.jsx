@@ -8,15 +8,40 @@ export default function PaymentRecordModal({ isOpen, onClose, invoice, onSaved }
   const [isFullPayment, setIsFullPayment] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  
+  const [availableCredit, setAvailableCredit] = useState(0);
+  const [useCredit, setUseCredit] = useState(false);
+  const [creditToApply, setCreditToApply] = useState(0);
+  const [additionalAvailable, setAdditionalAvailable] = useState(0);
 
   useEffect(() => {
     if (invoice) {
       setPaymentDate(invoice.payment_date || new Date().toISOString().split('T')[0]);
-      // If payment has already been recorded, default to that amount. Otherwise default to total_amount
       const initialAmt = invoice.amount_paid > 0 ? invoice.amount_paid : (invoice.total_amount || 0);
       setAmountPaid(initialAmt);
       setIsFullPayment(Math.abs(initialAmt - (invoice.total_amount || 0)) < 0.01);
       setError('');
+      
+      // Fetch credit balance excluding this invoice
+      setAvailableCredit(0);
+      setCreditToApply(invoice.credit_applied || 0);
+      setUseCredit((invoice.credit_applied || 0) > 0);
+      setAdditionalAvailable(0);
+      
+      fetch(`${API_BASE}/api/clients/${encodeURIComponent(invoice.client_name)}/credit?exclude_item_id=${invoice.id}`)
+        .then(res => {
+          if (res.ok) return res.json();
+          throw new Error("Failed to load credit");
+        })
+        .then(data => {
+          const addl = data.available_credit || 0;
+          setAdditionalAvailable(addl);
+          const currentApplied = invoice.credit_applied || 0;
+          setAvailableCredit(addl + currentApplied);
+        })
+        .catch(err => {
+          console.error("Error loading client credit:", err);
+        });
     }
   }, [invoice, isOpen]);
 
@@ -25,14 +50,41 @@ export default function PaymentRecordModal({ isOpen, onClose, invoice, onSaved }
   const handleFullPaymentToggle = (checked) => {
     setIsFullPayment(checked);
     if (checked) {
-      setAmountPaid(invoice.total_amount || 0);
+      const credit = useCredit ? creditToApply : 0;
+      setAmountPaid(Math.max(0, (invoice.total_amount || 0) - credit));
+    }
+  };
+
+  const handleUseCreditToggle = (checked) => {
+    setUseCredit(checked);
+    if (checked) {
+      const remainingVal = Math.max(0, (invoice.total_amount || 0) - amountPaid);
+      const applied = Math.min(availableCredit, remainingVal);
+      setCreditToApply(applied);
+      if (isFullPayment) {
+        setAmountPaid(Math.max(0, (invoice.total_amount || 0) - applied));
+      }
+    } else {
+      setCreditToApply(0);
+      if (isFullPayment) {
+        setAmountPaid(invoice.total_amount || 0);
+      }
+    }
+  };
+
+  const handleCreditChange = (val) => {
+    const num = Math.min(availableCredit, Math.max(0, parseFloat(val) || 0));
+    setCreditToApply(num);
+    if (isFullPayment) {
+      setAmountPaid(Math.max(0, (invoice.total_amount || 0) - num));
     }
   };
 
   const handleAmountChange = (val) => {
     const num = parseFloat(val) || 0;
     setAmountPaid(num);
-    setIsFullPayment(Math.abs(num - (invoice.total_amount || 0)) < 0.01);
+    const netDue = Math.max(0, (invoice.total_amount || 0) - (useCredit ? creditToApply : 0));
+    setIsFullPayment(Math.abs(num - netDue) < 0.01);
   };
 
   const handleSubmit = async (e) => {
@@ -40,19 +92,22 @@ export default function PaymentRecordModal({ isOpen, onClose, invoice, onSaved }
     setLoading(true);
     setError('');
 
+    const appliedCredit = useCredit ? creditToApply : 0.0;
+
     try {
       const res = await fetch(`${API_BASE}/api/invoices/${invoice.id}/payment`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          is_paid: isFullPayment ? 1 : (amountPaid > 0 ? 2 : 0),
+          is_paid: (amountPaid + appliedCredit) >= (invoice.total_amount || 0) ? 1 : ((amountPaid + appliedCredit) > 0 ? 2 : 0),
           payment_date: paymentDate,
-          amount_paid: amountPaid
+          amount_paid: amountPaid,
+          credit_applied: appliedCredit
         })
       });
 
       if (res.ok) {
-        onSaved(invoice.id, paymentDate, amountPaid);
+        onSaved(invoice.id, paymentDate, amountPaid, appliedCredit);
         onClose();
       } else {
         const txt = await res.text();
@@ -65,7 +120,8 @@ export default function PaymentRecordModal({ isOpen, onClose, invoice, onSaved }
     }
   };
 
-  const remainingBalance = Math.max(0, (invoice.total_amount || 0) - amountPaid);
+  const remainingBalance = Math.max(0, (invoice.total_amount || 0) - amountPaid - (useCredit ? creditToApply : 0));
+  const overpayment = Math.max(0, amountPaid + (useCredit ? creditToApply : 0) - (invoice.total_amount || 0));
 
   return (
     <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 animate-fade-in text-left">
@@ -127,6 +183,46 @@ export default function PaymentRecordModal({ isOpen, onClose, invoice, onSaved }
             />
           </div>
 
+          {/* Prior Credit Options */}
+          {availableCredit > 0 && (
+            <div className="bg-secondary/5 border border-secondary/15 rounded-lg p-4 space-y-3">
+              <div className="flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="use_credit_checkbox"
+                    checked={useCredit}
+                    onChange={(e) => handleUseCreditToggle(e.target.checked)}
+                    className="rounded border-secondary/40 text-secondary bg-surface-lowest focus:ring-secondary h-4 w-4 cursor-pointer"
+                  />
+                  <label htmlFor="use_credit_checkbox" className="text-xs font-bold text-secondary cursor-pointer select-none">
+                    Apply Prior Credit
+                  </label>
+                </div>
+                <span className="text-[10px] font-mono text-secondary font-bold bg-secondary/10 px-2 py-0.5 rounded">
+                  Available: ₹{availableCredit.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </span>
+              </div>
+              
+              {useCredit && (
+                <div className="space-y-1.5 animate-fade-in">
+                  <label className="text-[9px] font-bold text-on-surface-variant uppercase tracking-wider block">
+                    Credit Amount to Apply (INR)
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    max={availableCredit}
+                    value={creditToApply === 0 ? '' : creditToApply}
+                    onChange={(e) => handleCreditChange(e.target.value)}
+                    placeholder="Enter credit amount"
+                    className="w-full bg-surface-lowest border border-secondary/20 rounded-lg px-3 py-2 text-xs text-on-surface font-mono focus:outline-none focus:border-secondary transition-all"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Amount Paid */}
           <div className="space-y-2">
             <div className="flex justify-between items-center">
@@ -170,6 +266,10 @@ export default function PaymentRecordModal({ isOpen, onClose, invoice, onSaved }
             {remainingBalance > 0 ? (
               <p className="text-[10px] text-amber-500/80 leading-normal">
                 * This will mark the invoice status as <strong>Partially Received</strong>.
+              </p>
+            ) : overpayment > 0 ? (
+              <p className="text-[10px] text-secondary leading-normal">
+                * Overpayment of <strong>₹{overpayment.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</strong> will be saved as client credit.
               </p>
             ) : (
               <p className="text-[10px] text-secondary/80 leading-normal">

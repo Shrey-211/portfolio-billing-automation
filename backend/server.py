@@ -379,6 +379,23 @@ def apply_ui_overrides_to_excel(excel_path, item):
                         
                         ws.cell(row=target_row, column=col_total_idx).value = "=" + "+".join(formula_parts)
                 
+                matched_sheet = item.get("matched_sheet")
+                if matched_sheet and matched_sheet in wb.sheetnames:
+                    ws_match = wb[matched_sheet]
+                    if ws_match.max_column > 20:
+                        ws_match.delete_cols(21, ws_match.max_column - 20)
+                        
+                    exit_row = None
+                    for r in range(1, ws_match.max_row + 1):
+                        cell_val = ws_match.cell(row=r, column=1).value
+                        if cell_val is not None and str(cell_val).strip().upper() == "EXIT":
+                            exit_row = r
+                            break
+                            
+                    if exit_row is not None:
+                        if ws_match.max_row > exit_row:
+                            ws_match.delete_rows(exit_row + 1, ws_match.max_row - exit_row)
+                            
                 wb.save(excel_path)
                 wb.close()
                 return True
@@ -408,15 +425,33 @@ def read_calculated_values_from_excel(excel_path, client_name):
                     col_cgst_idx = processing.get_mapped_col(cols, ["cgst"], 18)
                     col_sgst_idx = processing.get_mapped_col(cols, ["sgst"], 19)
                     col_igst_idx = processing.get_mapped_col(cols, ["igst", "isgt"], 20)
-                    col_total_idx = processing.get_mapped_col(cols, ["total", "total_inv_amt", "total_amount"], 21)
-                    col_inv_idx = processing.get_mapped_col(cols, ["invoice_no", "invoice_number"], 5)
-                    
+                    try:
+                        fee_amount = round(float(ws.cell(row=r, column=col_taxable_idx).value or 0.0), 2)
+                    except:
+                        fee_amount = 0.0
+                    try:
+                        cgst = round(float(ws.cell(row=r, column=col_cgst_idx).value or 0.0), 2)
+                    except:
+                        cgst = 0.0
+                    try:
+                        sgst = round(float(ws.cell(row=r, column=col_sgst_idx).value or 0.0), 2)
+                    except:
+                        sgst = 0.0
+                    try:
+                        igst = round(float(ws.cell(row=r, column=col_igst_idx).value or 0.0), 2)
+                    except:
+                        igst = 0.0
+                    try:
+                        total_amount = round(float(ws.cell(row=r, column=col_total_idx).value or 0.0), 2)
+                    except:
+                        total_amount = 0.0
+                        
                     res = {
-                        "fee_amount": ws.cell(row=r, column=col_taxable_idx).value or 0.0,
-                        "cgst": ws.cell(row=r, column=col_cgst_idx).value or 0.0,
-                        "sgst": ws.cell(row=r, column=col_sgst_idx).value or 0.0,
-                        "igst": ws.cell(row=r, column=col_igst_idx).value or 0.0,
-                        "total_amount": ws.cell(row=r, column=col_total_idx).value or 0.0,
+                        "fee_amount": fee_amount,
+                        "cgst": cgst,
+                        "sgst": sgst,
+                        "igst": igst,
+                        "total_amount": total_amount,
                         "invoice_number": ws.cell(row=r, column=col_inv_idx).value or ""
                     }
                     wb.close()
@@ -607,6 +642,10 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
                         # Fallback ReportLab Generation
                         log_progress(" Excel not available. Running fallback ReportLab generators...", "warning")
                         # Set up invoice details
+                        fallback_total = item.get("total_amount", 0.0)
+                        prior_credit = database.get_client_available_credit(client_name)
+                        credit_applied = min(fallback_total, prior_credit)
+                        
                         invoice_data = {
                             "invoice_number": item.get("invoice_number") or f"{invoice_prefix}{next_inv_num:04d}",
                             "date": datetime.today().strftime('%d-%b-%Y'),
@@ -619,11 +658,12 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
                             "cgst": item.get("cgst", 0.0),
                             "sgst": item.get("sgst", 0.0),
                             "igst": item.get("igst", 0.0),
-                            "total_amount": item.get("total_amount", 0.0),
+                            "total_amount": fallback_total,
                             "particulars": item.get("particulars", ""),
                             "rate": item.get("rate", 0.0),
                             "period_start": item.get("period_start", ""),
-                            "period_end": item.get("period_end", "")
+                            "period_end": item.get("period_end", ""),
+                            "credit_applied": credit_applied
                         }
                         processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
                         
@@ -674,6 +714,10 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
                     igst = gst_calc["igst"]
                     total_amount = gst_calc["total_amount"]
                     
+                    # Calculate credit applied
+                    prior_credit = database.get_client_available_credit(client_name)
+                    credit_applied = min(total_amount, prior_credit)
+                    
                     # PDF Invoice
                     log_progress(" Rendering tax invoice document...", "debug")
                     invoice_code = f"{invoice_prefix}{next_inv_num:04d}"
@@ -690,7 +734,8 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
                         "cgst": cgst,
                         "sgst": sgst,
                         "igst": igst,
-                        "total_amount": total_amount
+                        "total_amount": total_amount,
+                        "credit_applied": credit_applied
                     }
                     processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
                     next_inv_num += 1
@@ -707,6 +752,11 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
             # Write job item
             if batch_id > 0:
                 try:
+                    prior_credit = database.get_client_available_credit(client_name)
+                    credit_applied = min(total_amount, prior_credit)
+                    is_paid_status = 1 if credit_applied >= total_amount else 0
+                    payment_date_val = datetime.today().strftime('%Y-%m-%d') if credit_applied >= total_amount else None
+                    
                     db_item = {
                         "batch_id": batch_id,
                         "filename": filename_base,
@@ -723,7 +773,10 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
                         "invoice_pdf_path": invoice_pdf_path if success else "",
                         "email_status": "Pending",
                         "custom_message": custom_message,
-                        "invoice_number": invoice_code if success else ""
+                        "invoice_number": invoice_code if success else "",
+                        "credit_applied": credit_applied if success else 0.0,
+                        "is_paid": is_paid_status if success else 0,
+                        "payment_date": payment_date_val if success else None
                     }
                     database.add_job_item(db_item)
                     try:
@@ -910,12 +963,22 @@ def run_email_thread(item_ids: List[int]):
         invoice_code = (item.get("invoice_number") or "").strip()
         if not invoice_code:
             invoice_code = f"{settings.get('invoice_prefix', 'INV-')}{item_id:04d}"
+            
+        credit_applied_val = float(item.get("credit_applied", 0.0) or 0.0)
+        custom_msg = item.get("custom_message", "") or ""
+        if credit_applied_val > 0:
+            credit_note = f"Note: A prior credit of INR {credit_applied_val:,.2f} has been applied to this invoice. The net amount payable is INR {max(0.0, float(item['total_amount'] or 0.0) - credit_applied_val):,.2f}."
+            if custom_msg:
+                custom_msg = f"{credit_note}\n\n{custom_msg}"
+            else:
+                custom_msg = credit_note
+
         invoice_details = {
             "invoice_number": invoice_code,
             "valuation": item["valuation"],
             "fee_amount": item["fee_amount"],
             "total_amount": item["total_amount"],
-            "custom_message": item.get("custom_message", "")
+            "custom_message": custom_msg
         }
         
         try:
@@ -925,7 +988,7 @@ def run_email_thread(item_ids: List[int]):
                 "Valuation": item["valuation"],
                 "FeeAmount": item["fee_amount"],
                 "TotalAmount": item["total_amount"],
-                "CustomMessage": item.get("custom_message", "") or ""
+                "CustomMessage": custom_msg
             }
             try:
                 subject = subject_template.format(**context)
@@ -1082,6 +1145,7 @@ class PaymentUpdatePayload(BaseModel):
     is_paid: int
     payment_date: Optional[str] = None
     amount_paid: Optional[float] = 0.0
+    credit_applied: Optional[float] = 0.0
 
 @app.post("/api/invoices/{item_id}/payment")
 def update_payment(item_id: int, payload: PaymentUpdatePayload):
@@ -1096,17 +1160,20 @@ def update_payment(item_id: int, payload: PaymentUpdatePayload):
         if not row:
             raise HTTPException(status_code=404, detail="Invoice record not found")
             
-        total_amount = row["total_amount"]
-        amount_paid = payload.amount_paid if payload.amount_paid is not None else 0.0
+        total_amount = round(row["total_amount"], 2)
+        amount_paid = round(payload.amount_paid if payload.amount_paid is not None else 0.0, 2)
+        credit_applied = round(payload.credit_applied if payload.credit_applied is not None else 0.0, 2)
         
-        if amount_paid == 0.0:
+        effective_payment = amount_paid + credit_applied
+        
+        if effective_payment == 0.0:
             is_paid_status = 0
-        elif amount_paid >= total_amount:
+        elif effective_payment >= total_amount:
             is_paid_status = 1
         else:
             is_paid_status = 2  # Partially paid
             
-        database.update_payment_status(item_id, is_paid_status, payload.payment_date, amount_paid)
+        database.update_payment_status(item_id, is_paid_status, payload.payment_date, amount_paid, credit_applied)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1169,6 +1236,9 @@ def edit_job_item(item_id: int, payload: JobItemEditPayload):
             status = "Skipped (Not Billable)"
             invoice_pdf_path = ""
             invoice_code = ""
+            credit_applied = 0.0
+            is_paid_status = 0
+            payment_date_val = None
         else:
             if payload.override_calculations:
                 fee_amount = payload.fee_amount if payload.fee_amount is not None else 0.0
@@ -1197,6 +1267,23 @@ def edit_job_item(item_id: int, payload: JobItemEditPayload):
                 invoice_prefix = settings.get("invoice_prefix", "INV-2026-")
                 invoice_code = f"{invoice_prefix}{item_id:04d}"
                 
+            # Recalculate credit applied
+            prior_credit = round(database.get_client_available_credit(payload.client_name, exclude_item_id=item_id), 2)
+            old_amount_paid = round(item.get("amount_paid") or 0.0, 2)
+            remaining_to_cover = round(max(0.0, total_amount - old_amount_paid), 2)
+            credit_applied = round(min(remaining_to_cover, prior_credit), 2)
+            
+            effective_payment = old_amount_paid + credit_applied
+            if effective_payment == 0.0:
+                is_paid_status = 0
+                payment_date_val = None
+            elif effective_payment >= total_amount:
+                is_paid_status = 1
+                payment_date_val = item.get("payment_date") or datetime.today().strftime('%Y-%m-%d')
+            else:
+                is_paid_status = 2
+                payment_date_val = item.get("payment_date") or datetime.today().strftime('%Y-%m-%d')
+
             # If payload.invoice_pdf_path is provided, not default, and exists on disk, use it and do NOT regenerate
             if payload.invoice_pdf_path and os.path.normpath(payload.invoice_pdf_path) != default_invoice_pdf_path and os.path.exists(payload.invoice_pdf_path):
                 invoice_pdf_path = payload.invoice_pdf_path
@@ -1215,7 +1302,8 @@ def edit_job_item(item_id: int, payload: JobItemEditPayload):
                     "cgst": cgst,
                     "sgst": sgst,
                     "igst": igst,
-                    "total_amount": total_amount
+                    "total_amount": total_amount,
+                    "credit_applied": credit_applied
                 }
                 processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
             
@@ -1244,7 +1332,10 @@ def edit_job_item(item_id: int, payload: JobItemEditPayload):
             "portfolio_pdf_path": payload.portfolio_pdf_path if payload.portfolio_pdf_path is not None else "",
             "custom_message": payload.custom_message,
             "email_status": "Pending" if is_regular else "Skipped",
-            "invoice_number": invoice_code
+            "invoice_number": invoice_code,
+            "credit_applied": credit_applied,
+            "is_paid": is_paid_status,
+            "payment_date": payment_date_val
         }
         database.update_job_item(item_id, updates)
         
@@ -1371,20 +1462,28 @@ def get_invoice_template(item_id: int):
     
     invoice_code = item["invoice_number"] or f"{settings.get('invoice_prefix', 'INV-2026-')}{item_id:04d}"
     
+    credit_applied_val = float(item.get("credit_applied", 0.0) or 0.0)
+    custom_msg = item.get("custom_message", "") or ""
+    if credit_applied_val > 0:
+        credit_note = f"Note: A prior credit of INR {credit_applied_val:,.2f} has been applied to this invoice. The net amount payable is INR {max(0.0, float(item['total_amount'] or 0.0) - credit_applied_val):,.2f}."
+        if custom_msg:
+            custom_msg = f"{credit_note}\n\n{custom_msg}"
+        else:
+            custom_msg = credit_note
+
     context = {
         "ClientName": client_name,
         "InvoiceNumber": invoice_code,
         "Valuation": float(item["valuation"]) if item["valuation"] is not None else 0.0,
         "FeeAmount": float(item["fee_amount"]) if item["fee_amount"] is not None else 0.0,
         "TotalAmount": float(item["total_amount"]) if item["total_amount"] is not None else 0.0,
-        "CustomMessage": item.get("custom_message", "") or ""
+        "CustomMessage": custom_msg
     }
 
     
     try:
         subject = subject_template.format(**context)
         body = body_template.format(**context)
-        custom_msg = item.get("custom_message", "")
         if custom_msg and "{CustomMessage}" not in body_template:
             if "Best Regards" in body:
                 body = body.replace("Best Regards", f"{custom_msg}\n\nBest Regards")
@@ -1439,23 +1538,51 @@ def get_payment_template(item_id: int):
     body_template = settings.get("payment_body_template", (
         "Dear {ClientName},\n\n"
         "Thank you for your payment of INR {TotalAmount:,.2f} against Invoice {InvoiceNumber}.\n\n"
-        "Your payment has been received and recorded. Please find the attached confirmation for your records.\n\n"
+        "Your payment has been received and recorded. {PaymentStatusDetails}\n\n"
+        "Please find the attached confirmation for your records.\n\n"
         "Best Regards,\n"
         "Antigravity Wealth Management"
     ))
     
+    amount_paid_val = float(item.get("amount_paid", 0.0) or 0.0)
+    credit_applied_val = float(item.get("credit_applied", 0.0) or 0.0)
+    effective_payment = amount_paid_val + credit_applied_val
+    credit_created_val = max(0.0, effective_payment - total_amt_val)
+    balance_due_val = max(0.0, total_amt_val - effective_payment)
+    
+    payment_status_details = ""
+    if credit_created_val > 0:
+        payment_status_details = f"An amount of INR {credit_created_val:,.2f} is in credit for future invoices."
+    elif balance_due_val > 0:
+        payment_status_details = f"An amount of INR {balance_due_val:,.2f} is remaining outstanding."
+    else:
+        payment_status_details = "This invoice is now paid in full."
+    
     context = {
         "ClientName": client_name,
         "InvoiceNumber": invoice_code,
-        "TotalAmount": total_amt_val,
+        "TotalAmount": amount_paid_val,
+        "InvoiceTotal": total_amt_val,
         "PaymentDate": payment_date_val,
         "CustomMessage": item.get("custom_message", "") or "",
-        "AmountPaid": float(item.get("amount_paid", 0.0) or 0.0)
+        "AmountPaid": amount_paid_val,
+        "CreditApplied": credit_applied_val,
+        "CreditCreated": credit_created_val,
+        "BalanceDue": balance_due_val,
+        "PaymentStatusDetails": payment_status_details
     }
     
     try:
         subject = subject_template.format(**context)
         body = body_template.format(**context)
+        
+        # If the template from settings does not contain the placeholder, inject it dynamically
+        if "{PaymentStatusDetails}" not in settings.get("payment_body_template", ""):
+            if "Best Regards" in body:
+                body = body.replace("Best Regards", f"{payment_status_details}\n\nBest Regards")
+            else:
+                body = f"{body}\n\n{payment_status_details}"
+                
         custom_msg = item.get("custom_message", "")
         if custom_msg and "{CustomMessage}" not in body_template:
             if "Best Regards" in body:
@@ -1634,6 +1761,14 @@ def get_email_history():
 
 # --- CLIENT REGISTRY & HISTORY ---
 
+@app.get("/api/clients/{client_name}/credit")
+def get_client_credit(client_name: str, exclude_item_id: Optional[int] = None):
+    try:
+        credit = database.get_client_available_credit(client_name, exclude_item_id)
+        return {"available_credit": credit}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/clients/{client_name}/history")
 def get_client_history(client_name: str):
     try:
@@ -1669,11 +1804,13 @@ def get_client_history(client_name: str):
         conn.close()
         
         email_history = database.get_client_email_history(client_name)
+        available_credit = database.get_client_available_credit(client_name)
         
         return {
             "profile": client_info,
             "billing": billing_history,
-            "emails": email_history
+            "emails": email_history,
+            "available_credit": available_credit
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

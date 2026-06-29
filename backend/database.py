@@ -91,6 +91,7 @@ def init_db(db_path=None):
         custom_message TEXT,
         invoice_number TEXT,
         amount_paid REAL DEFAULT 0.0,
+        credit_applied REAL DEFAULT 0.0,
         FOREIGN KEY(batch_id) REFERENCES batches(id)
     )
     """)
@@ -138,6 +139,10 @@ def init_db(db_path=None):
         cursor.execute("ALTER TABLE job_items ADD COLUMN amount_paid REAL DEFAULT 0.0")
     except sqlite3.OperationalError:
         pass
+    try:
+        cursor.execute("ALTER TABLE job_items ADD COLUMN credit_applied REAL DEFAULT 0.0")
+    except sqlite3.OperationalError:
+        pass
 
 
     
@@ -171,7 +176,7 @@ def init_db(db_path=None):
             "email_subject_template": "Portfolio Performance Report & Invoice - {ClientName}",
             "email_body_template": "Dear {ClientName},\n\nPlease find attached your Portfolio Performance Report and GST Invoice ({InvoiceNumber}) for the period.\n\nPortfolio Valuation: INR {Valuation:,.2f}\nTotal Fees (incl. GST): INR {TotalAmount:,.2f}\n\nBest Regards,\nAntigravity Wealth Management",
             "payment_subject_template": "Payment Confirmation - {ClientName} ({InvoiceNumber})",
-            "payment_body_template": "Dear {ClientName},\n\nThank you for your payment of INR {TotalAmount:,.2f} against Invoice {InvoiceNumber}.\n\nYour payment has been received and recorded. Please find attached the payment confirmation for your records.\n\nBest Regards,\nAntigravity Wealth Management",
+            "payment_body_template": "Dear {ClientName},\n\nThank you for your payment of INR {TotalAmount:,.2f} against Invoice {InvoiceNumber}.\n\nYour payment has been received and recorded. {PaymentStatusDetails}\n\nPlease find attached the payment confirmation for your records.\n\nBest Regards,\nAntigravity Wealth Management",
             "taxable_amt_formula": "Value * Rate / 4"
         }
         for key, val in default_settings.items():
@@ -187,7 +192,7 @@ def init_db(db_path=None):
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('email_qr_path', '')")
     # Ensure payment templates are present in older databases
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_subject_template', 'Payment Confirmation - {ClientName} ({InvoiceNumber})')")
-    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_body_template', 'Dear {ClientName},\n\nThank you for your payment of INR {TotalAmount:,.2f} against Invoice {InvoiceNumber}.\n\nYour payment has been received and recorded. Please find the attached confirmation for your records.\n\nBest Regards,\nAntigravity Wealth Management')")
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_body_template', 'Dear {ClientName},\n\nThank you for your payment of INR {TotalAmount:,.2f} against Invoice {InvoiceNumber}.\n\nYour payment has been received and recorded. {PaymentStatusDetails}\n\nPlease find the attached confirmation for your records.\n\nBest Regards,\nAntigravity Wealth Management')")
 
     # Populate Default Fee Rules if empty
     cursor.execute("SELECT COUNT(*) FROM fee_rules")
@@ -312,18 +317,20 @@ def add_job_item(item_data, db_path=None):
         item_data["invoice_number"] = ""
     if "amount_paid" not in item_data:
         item_data["amount_paid"] = 0.0
+    if "credit_applied" not in item_data:
+        item_data["credit_applied"] = 0.0
         
     cursor.execute("""
     INSERT INTO job_items (
         batch_id, filename, client_name, valuation, fee_amount, 
         cgst, sgst, igst, total_amount, status, error_msg, 
         portfolio_pdf_path, invoice_pdf_path, email_status, custom_message,
-        is_paid, payment_date, invoice_number, amount_paid
+        is_paid, payment_date, invoice_number, amount_paid, credit_applied
     ) VALUES (
         :batch_id, :filename, :client_name, :valuation, :fee_amount, 
         :cgst, :sgst, :igst, :total_amount, :status, :error_msg, 
         :portfolio_pdf_path, :invoice_pdf_path, :email_status, :custom_message,
-        :is_paid, :payment_date, :invoice_number, :amount_paid
+        :is_paid, :payment_date, :invoice_number, :amount_paid, :credit_applied
     )
     """, item_data)
     item_id = cursor.lastrowid
@@ -395,15 +402,44 @@ def get_all_job_items(limit=1000, db_path=None):
     conn.close()
     return items
 
-def update_payment_status(item_id, is_paid, payment_date=None, amount_paid=0.0, db_path=None):
+def update_payment_status(item_id, is_paid, payment_date=None, amount_paid=0.0, credit_applied=0.0, db_path=None):
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "UPDATE job_items SET is_paid = ?, payment_date = ?, amount_paid = ? WHERE id = ?",
-        (is_paid, payment_date, amount_paid, item_id)
+        "UPDATE job_items SET is_paid = ?, payment_date = ?, amount_paid = ?, credit_applied = ? WHERE id = ?",
+        (is_paid, payment_date, amount_paid, credit_applied, item_id)
     )
     conn.commit()
     conn.close()
+
+def get_client_available_credit(client_name, exclude_item_id=None, db_path=None):
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    
+    query = """
+        SELECT amount_paid, credit_applied, total_amount 
+        FROM job_items 
+        WHERE client_name = ?
+    """
+    params = [client_name]
+    if exclude_item_id is not None:
+        query += " AND id != ?"
+        params.append(exclude_item_id)
+        
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+    
+    balance = 0.0
+    for row in rows:
+        amt_paid = row["amount_paid"] or 0.0
+        cred_app = row["credit_applied"] or 0.0
+        tot_amt = row["total_amount"] or 0.0
+        
+        cred_gen = max(0.0, amt_paid + cred_app - tot_amt)
+        balance += (cred_gen - cred_app)
+        
+    return round(max(0.0, balance), 2)
 
 def add_email_log(log_data, db_path=None):
     conn = get_db_connection(db_path)

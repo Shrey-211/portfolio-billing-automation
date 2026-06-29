@@ -236,7 +236,14 @@ export default function ClientDatabase() {
                       <User className="h-5.5 w-5.5" />
                     </div>
                     <div>
-                      <h4 className="text-base font-bold text-on-surface">{selectedClient}</h4>
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <h4 className="text-base font-bold text-on-surface">{selectedClient}</h4>
+                        {clientHistory.available_credit > 0 && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-secondary/15 text-secondary border border-secondary/25">
+                            Credit: ₹{Number(clientHistory.available_credit).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </span>
+                        )}
+                      </div>
                       <p className="text-[10px] text-on-surface-variant/60 uppercase tracking-widest font-bold">Metadata Registry Card</p>
                     </div>
                   </div>
@@ -390,13 +397,19 @@ export default function ClientDatabase() {
                                   </span>
                                 </td>
                                 <td className="py-3 px-2 text-center">
-                                  {inv.is_paid === 1 ? (
-                                    <span className="inline-flex items-center gap-0.5 text-secondary text-[10px] font-bold"><CheckCircle className="h-3 w-3" /> Paid</span>
-                                  ) : inv.is_paid === 2 ? (
-                                    <span className="inline-flex items-center gap-0.5 text-amber-400 text-[10px] font-bold"><Clock className="h-3 w-3 animate-pulse" /> Partial</span>
-                                  ) : (
-                                    <span className="inline-flex items-center gap-0.5 text-error text-[10px] font-bold"><Clock className="h-3 w-3" /> Due</span>
-                                  )}
+                                   {inv.is_paid === 1 ? (
+                                     <div className="flex flex-col items-center">
+                                       <span className="inline-flex items-center gap-0.5 text-secondary text-[10px] font-bold"><CheckCircle className="h-3 w-3" /> Paid</span>
+                                       {inv.credit_applied > 0 && <span className="text-[8px] text-secondary font-medium font-mono">Credit: ₹{Number(inv.credit_applied).toLocaleString('en-IN')}</span>}
+                                     </div>
+                                   ) : inv.is_paid === 2 ? (
+                                     <div className="flex flex-col items-center">
+                                       <span className="inline-flex items-center gap-0.5 text-amber-400 text-[10px] font-bold"><Clock className="h-3 w-3 animate-pulse" /> Partial</span>
+                                       {inv.credit_applied > 0 && <span className="text-[8px] text-secondary font-medium font-mono">Credit: ₹{Number(inv.credit_applied).toLocaleString('en-IN')}</span>}
+                                     </div>
+                                   ) : (
+                                     <span className="inline-flex items-center gap-0.5 text-error text-[10px] font-bold"><Clock className="h-3 w-3" /> Due</span>
+                                   )}
                                 </td>
                                 <td className="py-3 px-2 text-right">
                                   <div className="flex items-center justify-end gap-1.5">

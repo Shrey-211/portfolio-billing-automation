@@ -102,7 +102,23 @@ def cleanse_formulas(input_path, output_path):
                     # Copy the evaluated value from the data sheet
                     eval_val = sheet_data.cell(row=r, column=c).value
                     cell_styled.value = eval_val
-                        
+                    
+            # Trim columns to Column T (20)
+            if sheet_styled.max_column > 20:
+                sheet_styled.delete_cols(21, sheet_styled.max_column - 20)
+                
+            # Trim rows to EXIT marker in Column A
+            exit_row = None
+            for r in range(1, sheet_styled.max_row + 1):
+                cell_val = sheet_styled.cell(row=r, column=1).value
+                if cell_val is not None and str(cell_val).strip().upper() == "EXIT":
+                    exit_row = r
+                    break
+                    
+            if exit_row is not None:
+                if sheet_styled.max_row > exit_row:
+                    sheet_styled.delete_rows(exit_row + 1, sheet_styled.max_row - exit_row)
+                    
         # Ensure output folder exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         wb_styled.save(output_path)
@@ -147,7 +163,7 @@ def calculate_fees(valuation, rules, calculation_type="flat"):
                 if taxable_in_slab > 0:
                     fee += (taxable_in_slab * pct / 100.0) + flat
                     
-    return fee
+    return round(fee, 2)
 
 def calculate_gst(fee_amount, state, gst_rates):
     """
@@ -169,7 +185,10 @@ def calculate_gst(fee_amount, state, gst_rates):
         sgst = 0.0
         igst = fee_amount * (igst_pct / 100.0)
         
-    total_amount = fee_amount + cgst + sgst + igst
+    cgst = round(cgst, 2)
+    sgst = round(sgst, 2)
+    igst = round(igst, 2)
+    total_amount = round(fee_amount + cgst + sgst + igst, 2)
     return {
         "cgst": cgst,
         "sgst": sgst,
@@ -618,25 +637,35 @@ def generate_invoice_pdf(pdf_path, invoice_details, company_details):
         Paragraph(f"<b>{invoice_details.get('total_amount', 0.0):,.2f}</b>", table_cell_right_bold)
     ])
     
+    credit_applied = float(invoice_details.get("credit_applied", 0.0) or 0.0)
+    if credit_applied > 0:
+        row_data.append([
+            Paragraph("Less: Prior Credit Applied (INR)", table_cell_style), "", "", "",
+            Paragraph(f"-{credit_applied:,.2f}", table_cell_right)
+        ])
+        net_payable = max(0.0, float(invoice_details.get("total_amount", 0.0) or 0.0) - credit_applied)
+        row_data.append([
+            Paragraph("<b>Net Amount Payable (INR)</b>", table_cell_style), "", "", "",
+            Paragraph(f"<b>{net_payable:,.2f}</b>", table_cell_right_bold)
+        ])
+    
     particulars_table = Table(row_data, colWidths=[200, 60, 110, 50, 95])
     
-    # Style logic depending on tax rows count
+    # Style logic depending on tax rows count and summary rows count
+    summary_start_idx = len(row_data) - 1 if credit_applied == 0 else len(row_data) - 3
+    
     t_styles = [
         ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1a365d')),
         ('ALIGN', (0,0), (-1,0), 'LEFT'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('GRID', (0,0), (-1,-2), 0.5, colors.HexColor('#cbd5e0')),
-        ('LINEBELOW', (0,-1), (-1,-1), 1.5, colors.HexColor('#1a365d')),
+        ('GRID', (0,0), (-1, summary_start_idx - 1), 0.5, colors.HexColor('#cbd5e0')),
+        ('LINEABOVE', (0, summary_start_idx), (-1, summary_start_idx), 1.0, colors.HexColor('#1a365d')),
+        ('LINEBELOW', (0, -1), (-1, -1), 1.5, colors.HexColor('#1a365d')),
         ('PADDING', (0,0), (-1,-1), 8),
     ]
     
-    if cgst > 0 or sgst > 0:
-        t_styles.append(('SPAN', (0,2), (3,2)))
-        t_styles.append(('SPAN', (0,3), (3,3)))
-        t_styles.append(('SPAN', (0,4), (3,4)))
-    else:
-        t_styles.append(('SPAN', (0,2), (3,2)))
-        t_styles.append(('SPAN', (0,3), (3,3)))
+    for r_idx in range(2, len(row_data)):
+        t_styles.append(('SPAN', (0, r_idx), (3, r_idx)))
         
     particulars_table.setStyle(TableStyle(t_styles))
     
