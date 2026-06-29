@@ -149,7 +149,9 @@ def update_fee_rules(payload: FeeRulesUpdate):
 @app.post("/api/clients")
 def update_client_profile(payload: ClientUpdate):
     try:
-        database.save_client(payload.model_dump())
+        data = payload.model_dump()
+        data["cc_email"] = ""
+        database.save_client(data)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -776,7 +778,8 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
                         "invoice_number": invoice_code if success else "",
                         "credit_applied": credit_applied if success else 0.0,
                         "is_paid": is_paid_status if success else 0,
-                        "payment_date": payment_date_val if success else None
+                        "payment_date": payment_date_val if success else None,
+                        "cc_email": item.get("cc_email", "")
                     }
                     database.add_job_item(db_item)
                     try:
@@ -785,7 +788,7 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
                             "client_type": item.get("client_type", "Type 1"),
                             "state": item.get("state", "Maharashtra"),
                             "email": item.get("email", ""),
-                            "cc_email": item.get("cc_email", ""),
+                            "cc_email": "",
                             "address": item.get("address", ""),
                             "gstin": item.get("gstin", "")
                         })
@@ -931,6 +934,9 @@ def run_email_thread(item_ids: List[int]):
                 "email": item.get("email", ""),
                 "cc_email": item.get("cc_email", ""),
             }
+        else:
+            client_info = dict(client_info)
+            client_info["cc_email"] = item.get("cc_email", "")
             
         to_email = client_info.get("email")
         if not to_email:
@@ -1313,7 +1319,7 @@ def edit_job_item(item_id: int, payload: JobItemEditPayload):
             "client_type": payload.client_type,
             "state": payload.state,
             "email": payload.email,
-            "cc_email": payload.cc_email,
+            "cc_email": "",
             "address": payload.address,
             "gstin": payload.gstin
         })
@@ -1502,7 +1508,7 @@ def get_invoice_template(item_id: int):
     return {
         "client_name": client_name,
         "recipient": client_info.get("email", ""),
-        "cc": client_info.get("cc_email", ""),
+        "cc": item.get("cc_email", "") or client_info.get("cc_email", ""),
         "subject": subject,
         "body": body,
         "attachments": attachments

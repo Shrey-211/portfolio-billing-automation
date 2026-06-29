@@ -954,6 +954,9 @@ def parse_single_excel_sheet(excel_path):
             "client_email_id", "email_id", "email", "e_mail", "e-mail",
             "client_email", "emailid", "email_address", "mail"
         ])
+        col_rm_email = get_mapped_col(cols, [
+            "rm_email", "rm_e-mail", "rm_e_mail", "rm_mail", "relationship_manager_email", "rm_email_id"
+        ])
         col_invoice = get_mapped_col(cols, ["invoice_no", "invoice_number"], 5)
         col_rate = get_mapped_col(cols, ["fee_@", "rate"], 4)
         col_address = get_mapped_col(cols, ["address_1", "address"], 6)
@@ -969,11 +972,16 @@ def parse_single_excel_sheet(excel_path):
         col_total = get_mapped_col(cols, ["total", "total_inv_amt", "total_amount"], 21)
 
         for r in range(header_row + 1, ws_master.max_row + 1):
+            cell_a_val = ws_master.cell(row=r, column=1).value
+            if cell_a_val is not None and str(cell_a_val).strip().upper() == "EXIT":
+                break
+                
             client_name = ws_master.cell(row=r, column=col_name).value
             if not client_name:
                 continue
             
             email = str(ws_master.cell(row=r, column=col_email).value or "").strip() if col_email else ""
+            rm_email = str(ws_master.cell(row=r, column=col_rm_email).value or "").strip() if col_rm_email else ""
             invoice_no = str(ws_master.cell(row=r, column=col_invoice).value or "").strip()
             
             rate_val = ws_master.cell(row=r, column=col_rate).value
@@ -1038,7 +1046,7 @@ def parse_single_excel_sheet(excel_path):
                 "client_type": "Type 1",
                 "state": state,
                 "email": email,
-                "cc_email": "",
+                "cc_email": rm_email,
                 "address": address,
                 "gstin": "",
                 "valuation": valuation,
@@ -1092,6 +1100,9 @@ def parse_single_excel_sheet(excel_path):
     
     for r_idx in range(header_row_idx + 1, len(rows)):
         row_vals = rows[r_idx]
+        if row_vals and row_vals[0] is not None and str(row_vals[0]).strip().upper() == "EXIT":
+            break
+            
         if not row_vals or not any(v is not None for v in row_vals):
             continue
 

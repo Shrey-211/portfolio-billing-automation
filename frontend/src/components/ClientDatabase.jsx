@@ -289,21 +289,12 @@ export default function ClientDatabase() {
                       className="w-full bg-surface-lowest border border-[#232d3f]/40 rounded-lg px-2.5 py-1.5 text-xs text-on-surface outline-none font-mono"
                     />
                   </div>
-                  <div className="space-y-1 md:col-span-1">
+                  <div className="space-y-1 md:col-span-3">
                     <label className="text-[9px] font-bold text-on-surface-variant/75 uppercase tracking-wider block">To Email Address</label>
                     <input
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="w-full bg-surface-lowest border border-[#232d3f]/40 rounded-lg px-2.5 py-1.5 text-xs text-on-surface outline-none font-sans"
-                    />
-                  </div>
-                  <div className="space-y-1 md:col-span-2">
-                    <label className="text-[9px] font-bold text-on-surface-variant/75 uppercase tracking-wider block">CC Email Address</label>
-                    <input
-                      type="text"
-                      value={ccEmail}
-                      onChange={(e) => setCcEmail(e.target.value)}
                       className="w-full bg-surface-lowest border border-[#232d3f]/40 rounded-lg px-2.5 py-1.5 text-xs text-on-surface outline-none font-sans"
                     />
                   </div>

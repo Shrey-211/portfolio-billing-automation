@@ -92,6 +92,7 @@ def init_db(db_path=None):
         invoice_number TEXT,
         amount_paid REAL DEFAULT 0.0,
         credit_applied REAL DEFAULT 0.0,
+        cc_email TEXT,
         FOREIGN KEY(batch_id) REFERENCES batches(id)
     )
     """)
@@ -141,6 +142,10 @@ def init_db(db_path=None):
         pass
     try:
         cursor.execute("ALTER TABLE job_items ADD COLUMN credit_applied REAL DEFAULT 0.0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE job_items ADD COLUMN cc_email TEXT")
     except sqlite3.OperationalError:
         pass
 
@@ -319,18 +324,20 @@ def add_job_item(item_data, db_path=None):
         item_data["amount_paid"] = 0.0
     if "credit_applied" not in item_data:
         item_data["credit_applied"] = 0.0
+    if "cc_email" not in item_data:
+        item_data["cc_email"] = ""
         
     cursor.execute("""
     INSERT INTO job_items (
         batch_id, filename, client_name, valuation, fee_amount, 
         cgst, sgst, igst, total_amount, status, error_msg, 
         portfolio_pdf_path, invoice_pdf_path, email_status, custom_message,
-        is_paid, payment_date, invoice_number, amount_paid, credit_applied
+        is_paid, payment_date, invoice_number, amount_paid, credit_applied, cc_email
     ) VALUES (
         :batch_id, :filename, :client_name, :valuation, :fee_amount, 
         :cgst, :sgst, :igst, :total_amount, :status, :error_msg, 
         :portfolio_pdf_path, :invoice_pdf_path, :email_status, :custom_message,
-        :is_paid, :payment_date, :invoice_number, :amount_paid, :credit_applied
+        :is_paid, :payment_date, :invoice_number, :amount_paid, :credit_applied, :cc_email
     )
     """, item_data)
     item_id = cursor.lastrowid
@@ -358,7 +365,7 @@ def get_batch_items(batch_id, db_path=None):
             j.*,
             b.quarter,
             COALESCE(c.email, '')       AS email,
-            COALESCE(c.cc_email, '')    AS cc_email,
+            COALESCE(j.cc_email, '')    AS cc_email,
             COALESCE(c.address, '')     AS address,
             COALESCE(c.gstin, '')       AS gstin,
             COALESCE(c.state, '')       AS state,
@@ -388,7 +395,7 @@ def get_all_job_items(limit=1000, db_path=None):
             j.*,
             b.quarter,
             COALESCE(c.email, '')       AS email,
-            COALESCE(c.cc_email, '')    AS cc_email,
+            COALESCE(j.cc_email, '')    AS cc_email,
             COALESCE(c.address, '')     AS address,
             COALESCE(c.gstin, '')       AS gstin,
             COALESCE(c.state, '')       AS state,

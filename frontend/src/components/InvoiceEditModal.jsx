@@ -234,24 +234,14 @@ export default function InvoiceEditModal({ isOpen, onClose, invoice, onSaved }) 
               </div>
             </div>
 
-            {/* Email & CC Email */}
+            {/* Email Address */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 md:col-span-2">
                 <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider block">Email Address</label>
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-surface-container-lowest border border-[#232d3f]/40 rounded-lg px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all font-sans"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider block">CC Email Address</label>
-                <input
-                  type="text"
-                  value={ccEmail}
-                  onChange={(e) => setCcEmail(e.target.value)}
-                  placeholder="Comma-separated emails"
                   className="w-full bg-surface-container-lowest border border-[#232d3f]/40 rounded-lg px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all font-sans"
                 />
               </div>
