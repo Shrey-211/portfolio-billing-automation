@@ -116,8 +116,7 @@ def cleanse_formulas(input_path, output_path):
                     break
                     
             if exit_row is not None:
-                if sheet_styled.max_row > exit_row:
-                    sheet_styled.delete_rows(exit_row + 1, sheet_styled.max_row - exit_row)
+                sheet_styled.delete_rows(exit_row, sheet_styled.max_row - exit_row + 1)
                     
         # Ensure output folder exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -691,7 +690,20 @@ def generate_invoice_pdf(pdf_path, invoice_details, company_details):
         ParagraphStyle('Sign', parent=normal_text, alignment=2) # Right align
     )
     
-    footer_table = Table([[bank_p, sign_p]], colWidths=[300, 215])
+    sheet_type = invoice_details.get("sheet_type", "example_1")
+    invoice_qr_path = company_details.get("invoice_qr_path", "").strip()
+    
+    if sheet_type == "example_2" and invoice_qr_path and os.path.exists(invoice_qr_path):
+        from reportlab.platypus import Image as RLImage
+        try:
+            qr_img = RLImage(invoice_qr_path, width=80, height=80)
+            footer_table = Table([[bank_p, qr_img, sign_p]], colWidths=[240, 95, 180])
+        except Exception as img_err:
+            print(f"Error loading QR image in ReportLab: {img_err}")
+            footer_table = Table([[bank_p, sign_p]], colWidths=[300, 215])
+    else:
+        footer_table = Table([[bank_p, sign_p]], colWidths=[300, 215])
+        
     footer_table.setStyle(TableStyle([
         ('VALIGN', (0,0), (-1,-1), 'TOP'),
         ('PADDING', (0,0), (-1,-1), 0),
@@ -749,13 +761,33 @@ def get_master_sheet_mapping(ws):
     return header_row, cols
 
 def get_mapped_col(cols_mapping, keys_list, fallback_idx=None):
+    extended_keys = []
     for k in keys_list:
+        extended_keys.append(k)
+        no_under = k.replace("_", "")
+        if no_under not in extended_keys:
+            extended_keys.append(no_under)
+            
+    has_taxable = any("taxable" in k for k in keys_list)
+    has_total = any("total" in k for k in keys_list)
+    has_invoice = any("invoice" in k for k in keys_list)
+    
+    if has_taxable:
+        extended_keys.extend(["taxable", "fee", "taxable_fee", "taxablefee"])
+    if has_total:
+        extended_keys.extend(["total", "total_by_client", "totalbyclient", "total_amount", "totalamount"])
+    if has_invoice:
+        extended_keys.extend(["invoice", "invoiceno", "invoice_no", "invoice_number"])
+
+    for k in extended_keys:
         if k in cols_mapping:
             return cols_mapping[k]
-    for k in keys_list:
+            
+    for k in extended_keys:
         for mk in cols_mapping:
-            if mk.startswith(k) or k in mk:
+            if k in mk or mk in k:
                 return cols_mapping[mk]
+                
     return fallback_idx
 
 def parse_company_and_bank_details(ws_inv):
@@ -870,7 +902,7 @@ def get_best_sheet_match(client_name, sheet_names):
             
     return best_match
 
-def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path, excel_app=None):
+def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path, excel_app=None, sheet_type="example_1", invoice_qr_path=None, invoice_qr_excel_cell="G30"):
     if not EXCEL_AVAILABLE:
         raise RuntimeError("Microsoft Excel is not installed or pywin32 is not configured.")
         
@@ -898,6 +930,23 @@ def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path, excel_app=N
         
         ws = wb.Sheets("Invoice")
         ws.Range("B13").Value = client_key
+        
+        if sheet_type == "example_2" and invoice_qr_path and os.path.exists(invoice_qr_path):
+            try:
+                cell_name = invoice_qr_excel_cell or "G30"
+                target_range = ws.Range(cell_name)
+                ws.Shapes.AddPicture(
+                    os.path.abspath(invoice_qr_path),
+                    LinkToFile=False,
+                    SaveWithDocument=True,
+                    Left=target_range.Left,
+                    Top=target_range.Top,
+                    Width=80,
+                    Height=80
+                )
+            except Exception as pic_err:
+                print(f"Error adding QR shape to Excel Invoice: {pic_err}")
+                
         ws.Calculate()
         wb.Save()
         ws.ExportAsFixedFormat(0, abs_pdf)

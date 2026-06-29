@@ -12,7 +12,7 @@ import {
   Percent
 } from 'lucide-react';
 
-export default function Home({ setTab, setQueue, setFolderPath, folderPath, queue, setImportMode }) {
+export default function Home({ setTab, setQueue, setFolderPath, folderPath, queue, setImportMode, sheetType, setSheetType }) {
   const [loading, setLoading] = useState(false);
   const [recentBatches, setRecentBatches] = useState([]);
   const [stats, setStats] = useState({
@@ -198,7 +198,18 @@ export default function Home({ setTab, setQueue, setFolderPath, folderPath, queu
                 </button>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-on-surface-variant/75 uppercase tracking-wider block">Sheet Type</label>
+                  <select
+                    value={sheetType}
+                    onChange={(e) => setSheetType(e.target.value)}
+                    className="w-full bg-surface-lowest border border-[#232d3f]/40 rounded-lg px-3 py-2 text-xs text-on-surface font-semibold focus:outline-none focus:border-primary transition-colors cursor-pointer"
+                  >
+                    <option value="example_1">Example 1 (Default)</option>
+                    <option value="example_2">Example 2 (with QR Code)</option>
+                  </select>
+                </div>
                 <button
                   onClick={handleSelectExcelSheet}
                   disabled={loading}

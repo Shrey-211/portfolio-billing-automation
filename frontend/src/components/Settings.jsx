@@ -27,6 +27,7 @@ const TABS = [
   { id: 'calculation', label: 'Calculation',         icon: Percent  },
   { id: 'smtp',        label: 'Mail Server',         icon: Mail     },
   { id: 'templates',   label: 'Email Templates',     icon: Info     },
+  { id: 'invoice_qr',  label: 'Invoice QR',          icon: QrCode   },
 ];
 
 /* ─── Stable helpers — defined OUTSIDE the component so React never
@@ -54,6 +55,7 @@ export default function Settings() {
   const [showLegacySlabs, setShowLegacySlabs] = useState(false);
   const [templateTab, setTemplateTab]        = useState('invoice'); // 'invoice' | 'payment'
   const [qrPreview, setQrPreview]            = useState(null); // { data_uri, filename } | null
+  const [invoiceQrPreview, setInvoiceQrPreview] = useState(null); // { data_uri, filename } | null
 
 
   const [testEmailAddr,   setTestEmailAddr]   = useState('');
@@ -182,8 +184,42 @@ export default function Settings() {
     } catch (err) { console.error('QR clear error:', err); }
   };
 
+  const loadInvoiceQrPreview = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/settings/invoice-qr-preview`);
+      if (res.ok) {
+        const data = await res.json();
+        setInvoiceQrPreview(data.data_uri ? data : null);
+      }
+    } catch { /* silent */ }
+  };
+
+  const selectInvoiceQr = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/settings/select-invoice-qr`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.qr_path) {
+          setSettings(prev => ({ ...prev, invoice_qr_path: data.qr_path }));
+          await loadInvoiceQrPreview();
+        }
+      }
+    } catch (err) { console.error('Invoice QR select error:', err); }
+  };
+
+  const clearInvoiceQr = async () => {
+    try {
+      await fetch(`${API_BASE}/api/settings/clear-invoice-qr`, { method: 'POST' });
+      setSettings(prev => ({ ...prev, invoice_qr_path: '' }));
+      setInvoiceQrPreview(null);
+    } catch (err) { console.error('Invoice QR clear error:', err); }
+  };
+
   // Load QR preview on mount
-  useEffect(() => { loadQrPreview(); }, []);
+  useEffect(() => {
+    loadQrPreview();
+    loadInvoiceQrPreview();
+  }, []);
 
   /* ─── tab panels ─── */
   const panels = {
@@ -618,6 +654,71 @@ export default function Settings() {
           <p className="text-[9.5px] text-on-surface-variant">
             Separate multiple addresses with commas. Applied to <strong>every</strong> email (both templates). Client-specific CC is appended on top.
           </p>
+        </div>
+      </div>
+    ),
+
+    /* ── 5. Invoice PDF QR Code ── */
+    invoice_qr: (
+      <div className="space-y-8 animate-fade-in">
+        <div>
+          <p className="text-sm font-bold text-on-surface">Invoice PDF QR Code</p>
+          <p className="text-[11px] text-on-surface-variant mt-0.5">Configure a payment QR code image to draw directly on the generated invoice PDF (Example 2 sheet style only).</p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+          <div className="sm:col-span-2">
+            <Field label="Excel Cell Target (for Excel template insertion)">
+              <input
+                type="text"
+                name="invoice_qr_excel_cell"
+                value={settings.invoice_qr_excel_cell || 'G30'}
+                onChange={handleSettingChange}
+                placeholder="e.g. G30 or H32"
+                className={inputCls + ' font-mono'}
+              />
+              <p className="text-[9.5px] text-on-surface-variant mt-1.5">
+                The cell location on the <strong>Invoice</strong> sheet where the QR code image will be aligned and pasted.
+              </p>
+            </Field>
+          </div>
+        </div>
+
+        <div className="border-t border-outline-variant/20 pt-5 space-y-3">
+          <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Invoice QR Image File</p>
+          {invoiceQrPreview ? (
+            <div className="flex items-start gap-4 p-4 bg-surface-lowest/30 border border-outline-variant/20 rounded-lg">
+              <img
+                src={invoiceQrPreview.data_uri}
+                alt="Invoice QR Code"
+                className="w-24 h-24 object-contain rounded-lg border border-outline-variant/30 bg-white/5 flex-shrink-0"
+              />
+              <div className="flex-1 min-w-0 space-y-2">
+                <p className="text-xs font-semibold text-on-surface truncate">{invoiceQrPreview.filename}</p>
+                <p className="text-[9.5px] text-emerald-400 flex items-center gap-1">
+                  <Check className="h-3 w-3" /> Configured and ready
+                </p>
+                <div className="flex gap-2 pt-1">
+                  <button type="button" onClick={selectInvoiceQr} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-bold bg-primary/15 text-primary border border-primary/25 hover:bg-primary/25 transition-all cursor-pointer">
+                    <ImageIcon className="h-3 w-3" /> Change Image
+                  </button>
+                  <button type="button" onClick={clearInvoiceQr} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-bold bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-all cursor-pointer">
+                    <X className="h-3 w-3" /> Remove
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={selectInvoiceQr}
+              className="w-full flex flex-col items-center justify-center gap-2 p-6 border border-dashed border-outline-variant/40 rounded-lg hover:border-primary/50 hover:bg-primary/5 transition-all cursor-pointer group"
+            >
+              <QrCode className="h-8 w-8 text-on-surface-variant/40 group-hover:text-primary/60 transition-colors" />
+              <p className="text-xs font-semibold text-on-surface-variant group-hover:text-on-surface transition-colors">Click to select Invoice QR code image</p>
+              <p className="text-[9.5px] text-on-surface-variant/60">PNG, JPG, WEBP supported</p>
+            </button>
+          )}
         </div>
       </div>
     ),

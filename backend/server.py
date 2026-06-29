@@ -96,6 +96,7 @@ class BatchProcessRequest(BaseModel):
     items: List[FileItemToProcess]
     import_mode: str = "folder"
     quarter: Optional[str] = None
+    sheet_type: Optional[str] = "example_1"
 
 
 class EmailSendRequest(BaseModel):
@@ -395,8 +396,7 @@ def apply_ui_overrides_to_excel(excel_path, item):
                             break
                             
                     if exit_row is not None:
-                        if ws_match.max_row > exit_row:
-                            ws_match.delete_rows(exit_row + 1, ws_match.max_row - exit_row)
+                        ws_match.delete_rows(exit_row, ws_match.max_row - exit_row + 1)
                             
                 wb.save(excel_path)
                 wb.close()
@@ -427,6 +427,8 @@ def read_calculated_values_from_excel(excel_path, client_name):
                     col_cgst_idx = processing.get_mapped_col(cols, ["cgst"], 18)
                     col_sgst_idx = processing.get_mapped_col(cols, ["sgst"], 19)
                     col_igst_idx = processing.get_mapped_col(cols, ["igst", "isgt"], 20)
+                    col_total_idx = processing.get_mapped_col(cols, ["total", "total_inv_amt", "total_amount"], 21)
+                    col_inv_idx = processing.get_mapped_col(cols, ["invoice_no", "invoice_number"], 5)
                     try:
                         fee_amount = round(float(ws.cell(row=r, column=col_taxable_idx).value or 0.0), 2)
                     except:
@@ -464,7 +466,7 @@ def read_calculated_values_from_excel(excel_path, client_name):
     return None
 
 # --- BATCH RUN PROCESSOR ---
-def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode: str = "folder", quarter: Optional[str] = None):
+def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode: str = "folder", quarter: Optional[str] = None, sheet_type: str = "example_1"):
     global PROGRESS_STATE
     total = len(items)
     completed = 0
@@ -629,7 +631,14 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
                     # Check Excel availability
                     if processing.EXCEL_AVAILABLE:
                         log_progress(" Generating tax invoice from Excel template...", "debug")
-                        processing.generate_invoice_pdf_via_excel(master_xlsx_copy, client_name, invoice_pdf_path, excel_app=excel_app)
+                        settings_db = database.get_all_settings()
+                        inv_qr = settings_db.get("invoice_qr_path", "").strip()
+                        inv_cell = settings_db.get("invoice_qr_excel_cell", "G30").strip()
+                        processing.generate_invoice_pdf_via_excel(
+                            master_xlsx_copy, client_name, invoice_pdf_path,
+                            excel_app=excel_app, sheet_type=sheet_type,
+                            invoice_qr_path=inv_qr, invoice_qr_excel_cell=inv_cell
+                        )
                         
                         if portfolio_excel_source:
                             log_progress(f" Generating portfolio report from individual workbook: {os.path.basename(portfolio_excel_source)}...", "debug")
@@ -665,7 +674,8 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
                             "rate": item.get("rate", 0.0),
                             "period_start": item.get("period_start", ""),
                             "period_end": item.get("period_end", ""),
-                            "credit_applied": credit_applied
+                            "credit_applied": credit_applied,
+                            "sheet_type": sheet_type
                         }
                         processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
                         
@@ -847,7 +857,7 @@ def start_batch_processing(payload: BatchProcessRequest, background_tasks: Backg
         "logs": [],
         "batch_id": None
     }
-    background_tasks.add_task(run_batch_thread, payload.folder_path, items_dict, payload.import_mode, payload.quarter)
+    background_tasks.add_task(run_batch_thread, payload.folder_path, items_dict, payload.import_mode, payload.quarter, payload.sheet_type)
     return {"status": "started"}
 
 @app.get("/api/batch/progress")
@@ -1757,6 +1767,50 @@ def get_qr_preview():
     with open(qr_path, "rb") as f:
         data = base64.b64encode(f.read()).decode()
     return {"data_uri": f"data:{mime};base64,{data}", "filename": os.path.basename(qr_path)}
+
+@app.post("/api/settings/select-invoice-qr")
+def select_invoice_qr_image():
+    """Open a native file picker for an image, save path to invoice_qr_path setting."""
+    import tkinter as tk
+    from tkinter import filedialog
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = filedialog.askopenfilename(
+            title="Select Invoice QR Code Image",
+            filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif")]
+        )
+        root.destroy()
+        if not selected:
+            return {"qr_path": ""}
+        qr_path = os.path.normpath(selected)
+        database.save_setting("invoice_qr_path", qr_path)
+        return {"qr_path": qr_path}
+    except Exception as e:
+        print(f"Error selecting Invoice QR image: {e}")
+        return {"error": str(e)}
+
+@app.post("/api/settings/clear-invoice-qr")
+def clear_invoice_qr_image():
+    """Remove the configured Invoice QR code image."""
+    database.save_setting("invoice_qr_path", "")
+    return {"status": "cleared"}
+
+@app.get("/api/settings/invoice-qr-preview")
+def get_invoice_qr_preview():
+    """Return the Invoice QR code image as a base64 data URI for preview."""
+    import base64
+    qr_path = database.get_setting("invoice_qr_path") or ""
+    if not qr_path or not os.path.exists(qr_path):
+        return {"data_uri": "", "filename": ""}
+    ext = os.path.splitext(qr_path)[1].lower().lstrip(".")
+    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "gif": "image/gif", "bmp": "image/bmp", "webp": "image/webp"}.get(ext, "image/png")
+    with open(qr_path, "rb") as f:
+        data = base64.b64encode(f.read()).decode()
+    return {"data_uri": f"data:{mime};base64,{data}", "filename": os.path.basename(qr_path)}
+
 
 @app.get("/api/email/history")
 def get_email_history():

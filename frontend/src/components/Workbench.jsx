@@ -31,7 +31,7 @@ const getValidationErrors = (item) => {
   return errors;
 };
 
-export default function Workbench({ queue, setQueue, folderPath, setTab, importMode }) {
+export default function Workbench({ queue, setQueue, folderPath, setTab, importMode, sheetType }) {
   const [selectedIdx, setSelectedIdx] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -183,6 +183,7 @@ export default function Workbench({ queue, setQueue, folderPath, setTab, importM
           folder_path: folderPath,
           import_mode: importMode,
           quarter: finalQuarter,
+          sheet_type: sheetType,
           items: queue.map(q => ({
             filename: q.filename,
             client_name: q.client_name,

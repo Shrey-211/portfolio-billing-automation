@@ -257,19 +257,7 @@ export default function ClientDatabase() {
                   </button>
                 </div>
 
-                <form onSubmit={handleSaveProfile} className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-on-surface-variant/75 uppercase tracking-wider block">Classification</label>
-                    <select
-                      value={clientType}
-                      onChange={(e) => setClientType(e.target.value)}
-                      className="w-full bg-surface-lowest border border-[#232d3f]/40 rounded-lg px-2.5 py-1.5 text-xs text-on-surface outline-none cursor-pointer"
-                    >
-                      <option value="Type 1">Type 1 (Regular)</option>
-                      <option value="Type 2">Type 2 (RI Equity)</option>
-                      <option value="Type 3">Type 3 (RI MF)</option>
-                    </select>
-                  </div>
+                <form onSubmit={handleSaveProfile} className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-1">
                     <label className="text-[9px] font-bold text-on-surface-variant/75 uppercase tracking-wider block">Supply State</label>
                     <input
@@ -289,7 +277,7 @@ export default function ClientDatabase() {
                       className="w-full bg-surface-lowest border border-[#232d3f]/40 rounded-lg px-2.5 py-1.5 text-xs text-on-surface outline-none font-mono"
                     />
                   </div>
-                  <div className="space-y-1 md:col-span-3">
+                  <div className="space-y-1 md:col-span-2">
                     <label className="text-[9px] font-bold text-on-surface-variant/75 uppercase tracking-wider block">To Email Address</label>
                     <input
                       type="email"

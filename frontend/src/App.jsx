@@ -31,6 +31,7 @@ function App() {
   const [queue, setQueue] = useState([]);
   const [batchId, setBatchId] = useState(null);
   const [importMode, setImportMode] = useState('folder'); // 'folder' or 'sheet'
+  const [sheetType, setSheetType] = useState('example_1'); // 'example_1' or 'example_2'
   const [isCollapsed, setIsCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === 'true');
 
   const toggleSidebar = () => {
@@ -186,6 +187,8 @@ function App() {
               folderPath={folderPath}
               queue={queue}
               setImportMode={setImportMode}
+              sheetType={sheetType}
+              setSheetType={setSheetType}
             />
           )}
           
@@ -196,6 +199,7 @@ function App() {
               folderPath={folderPath}
               setTab={setActiveTab}
               importMode={importMode}
+              sheetType={sheetType}
             />
           )}
           

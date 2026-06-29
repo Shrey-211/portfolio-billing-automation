@@ -207,21 +207,9 @@ export default function InvoiceEditModal({ isOpen, onClose, invoice, onSaved }) 
               </div>
             </div>
 
-            {/* Client Type & State */}
+            {/* Place of Supply (State) */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider block">Client Type</label>
-                <select
-                  value={clientType}
-                  onChange={(e) => setClientType(e.target.value)}
-                  className="w-full bg-surface-container-lowest border border-[#232d3f]/40 rounded-lg px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all cursor-pointer"
-                >
-                  <option value="Type 1">Type 1 (Regular)</option>
-                  <option value="Type 2">Type 2 (RI Equity)</option>
-                  <option value="Type 3">Type 3 (RI MF)</option>
-                </select>
-              </div>
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 md:col-span-2">
                 <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider block">Place of Supply (State)</label>
                 <input
                   type="text"
