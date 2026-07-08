@@ -933,19 +933,58 @@ def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path, excel_app=N
         
         if sheet_type == "example_2" and invoice_qr_path and os.path.exists(invoice_qr_path):
             try:
-                cell_name = invoice_qr_excel_cell or "G30"
-                target_range = ws.Range(cell_name)
-                ws.Shapes.AddPicture(
-                    os.path.abspath(invoice_qr_path),
-                    LinkToFile=False,
-                    SaveWithDocument=True,
-                    Left=target_range.Left,
-                    Top=target_range.Top,
-                    Width=80,
-                    Height=80
-                )
+                replaced = False
+                for i in range(ws.Shapes.Count, 0, -1):
+                    shape = ws.Shapes.Item(i)
+                    is_target = False
+                    try:
+                        if shape.Name.lower() == "picture 2":
+                            is_target = True
+                    except:
+                        pass
+                    
+                    if not is_target:
+                        try:
+                            addr = shape.TopLeftCell.Address.replace("$", "")
+                            col = ''.join([c for c in addr if c.isalpha()])
+                            row_num = int(''.join([c for c in addr if c.isdigit()]))
+                            if col in ('E', 'F', 'G') and 34 <= row_num <= 37:
+                                is_target = True
+                        except:
+                            pass
+                            
+                    if is_target:
+                        left = shape.Left
+                        top = shape.Top
+                        width = shape.Width
+                        height = shape.Height
+                        shape.Delete()
+                        ws.Shapes.AddPicture(
+                            os.path.abspath(invoice_qr_path),
+                            LinkToFile=False,
+                            SaveWithDocument=True,
+                            Left=left,
+                            Top=top,
+                            Width=width,
+                            Height=height
+                        )
+                        replaced = True
+                        break
+                
+                if not replaced:
+                    cell_name = invoice_qr_excel_cell or "G30"
+                    target_range = ws.Range(cell_name)
+                    ws.Shapes.AddPicture(
+                        os.path.abspath(invoice_qr_path),
+                        LinkToFile=False,
+                        SaveWithDocument=True,
+                        Left=target_range.Left,
+                        Top=target_range.Top,
+                        Width=80,
+                        Height=80
+                    )
             except Exception as pic_err:
-                print(f"Error adding QR shape to Excel Invoice: {pic_err}")
+                print(f"Error adding or replacing QR shape to Excel Invoice: {pic_err}")
                 
         ws.Calculate()
         wb.Save()
