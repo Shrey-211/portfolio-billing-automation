@@ -265,22 +265,17 @@ export default function MasterSheet({ folderPath }) {
   };
 
   const handleExportLedger = async () => {
-    if (!folderPath) {
-      alert("Please select a workspace or folder first on the Dashboard tab.");
-      return;
-    }
-    
     setExporting(true);
     try {
       const res = await fetch(`${API_BASE}/api/invoices/export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder_path: folderPath })
+        body: JSON.stringify({ folder_path: folderPath || '' })
       });
 
       if (res.ok) {
         const data = await res.json();
-        showFeedback(`Ledger exported successfully to ${data.file_path.split('\\').pop()}`);
+        showFeedback(`Ledger exported successfully to ${data.file_path}`);
         
         // Try to open folder or file automatically
         await fetch(`${API_BASE}/api/pdf/open`, {
@@ -538,15 +533,15 @@ export default function MasterSheet({ folderPath }) {
                           />
                         ) : (
                           <div className="flex items-center justify-between gap-1.5">
-                            <span>₹{inv.valuation.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                            <span>₹{(inv.valuation || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
                           </div>
                         )}
                       </td>
                       <td className="py-4 px-6 font-mono text-on-surface-variant">
-                        ₹{inv.fee_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        ₹{(inv.fee_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="py-4 px-6 font-mono font-bold text-on-surface">
-                        ₹{inv.total_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        ₹{(inv.total_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="py-4 px-6 text-center">
                         {cellLoading === inv.id ? (

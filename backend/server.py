@@ -2,9 +2,10 @@ import os
 import sys
 import threading
 import time
+import subprocess
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -14,6 +15,9 @@ from tkinter import filedialog
 import backend.database as database
 import backend.processing as processing
 import backend.email_service as email_service
+
+UPLOAD_DIR = os.path.join(os.path.expanduser("~"), ".portfolio_billing", "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = FastAPI(title="Portfolio Billing API")
 
@@ -25,6 +29,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Thread locks for safe progress updates
+PROGRESS_LOCK = threading.Lock()
+EMAIL_LOCK = threading.Lock()
 
 # Global processing states
 PROGRESS_STATE = {
@@ -96,17 +104,28 @@ class BatchProcessRequest(BaseModel):
     items: List[FileItemToProcess]
     import_mode: str = "folder"
 
-
 class EmailSendRequest(BaseModel):
     item_ids: List[int]
 
 def log_progress(msg: str, log_type: str = "info"):
     timestamp = datetime.now().strftime("%H:%M:%S")
-    PROGRESS_STATE["logs"].append({
-        "timestamp": timestamp,
-        "message": msg,
-        "type": log_type
-    })
+    with PROGRESS_LOCK:
+        PROGRESS_STATE["logs"].append({
+            "timestamp": timestamp,
+            "message": msg,
+            "type": log_type
+        })
+
+def open_system_path(path: str):
+    """Cross-platform launcher for files and folders."""
+    if not path or not os.path.exists(path):
+        raise FileNotFoundError(f"Path not found: {path}")
+    if sys.platform == 'win32':
+        os.startfile(path)
+    elif sys.platform == 'darwin':
+        subprocess.run(['open', path], check=False)
+    else:
+        subprocess.run(['xdg-open', path], check=False)
 
 # --- SETTINGS ENDPOINTS ---
 @app.get("/api/settings")
@@ -160,35 +179,102 @@ def get_client_by_name(client_name: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- NATIVE SUBPROCESS DIALOG HELPERS ---
+def pick_folder_native(title="Select Portfolio Folder") -> str:
+    """Opens a native folder dialog in an isolated process to prevent AnyIO/asyncio thread deadlocks."""
+    if not getattr(sys, 'frozen', False):
+        script = (
+            "import sys, os, tkinter as tk\n"
+            "from tkinter import filedialog\n"
+            "try:\n"
+            "    root = tk.Tk()\n"
+            "    root.withdraw()\n"
+            "    root.attributes('-topmost', True)\n"
+            "    root.lift()\n"
+            "    root.focus_force()\n"
+            f"    p = filedialog.askdirectory(title='{title}')\n"
+            "    root.destroy()\n"
+            "    if p: print(p.strip())\n"
+            "except Exception:\n"
+            "    pass\n"
+        )
+        try:
+            res = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+            val = res.stdout.strip()
+            if val and os.path.isdir(val):
+                return val
+        except Exception as e:
+            print(f"Subprocess folder picker error: {e}")
 
-# --- FOLDER DIALOG SELECT ---
-@app.post("/api/folders/select")
-def select_folder():
-    # Native dialog runs in main thread context or separate process
-    # Tkinter requires thread safety: run withdraw in a safe loop
-    folder_path = ""
+    # PowerShell Shell.Application fallback (always available on Windows)
+    ps_cmd = (
+        "$app = New-Object -ComObject Shell.Application; "
+        f"$folder = $app.BrowseForFolder(0, '{title}', 0, 0); "
+        "if ($folder) { $folder.Self.Path }"
+    )
     try:
-        # Run tkinter in a daemon-safe way
-        root = tk.Tk()
-        root.withdraw()
-        root.wm_attributes('-topmost', 1)
-        folder_path = filedialog.askdirectory(title="Select Portfolio Folder")
-        root.destroy()
+        res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, text=True, timeout=60)
+        val = res.stdout.strip()
+        if val and os.path.isdir(val):
+            return val
     except Exception as e:
-        print(f"Error opening folder picker: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to open native picker: {e}")
+        print(f"PowerShell folder picker error: {e}")
 
-    if not folder_path:
+    return ""
+
+def pick_file_native(title="Select Billing Excel Sheet") -> str:
+    """Opens a native file dialog in an isolated process to prevent AnyIO/asyncio thread deadlocks."""
+    if not getattr(sys, 'frozen', False):
+        script = (
+            "import sys, os, tkinter as tk\n"
+            "from tkinter import filedialog\n"
+            "try:\n"
+            "    root = tk.Tk()\n"
+            "    root.withdraw()\n"
+            "    root.attributes('-topmost', True)\n"
+            "    root.lift()\n"
+            "    root.focus_force()\n"
+            f"    p = filedialog.askopenfilename(title='{title}', filetypes=[('Excel Files', '*.xlsx *.xlsm')])\n"
+            "    root.destroy()\n"
+            "    if p: print(p.strip())\n"
+            "except Exception:\n"
+            "    pass\n"
+        )
+        try:
+            res = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+            val = res.stdout.strip()
+            if val and os.path.isfile(val):
+                return val
+        except Exception as e:
+            print(f"Subprocess file picker error: {e}")
+
+    # PowerShell OpenFileDialog fallback
+    ps_cmd = (
+        "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; "
+        "$f = New-Object System.Windows.Forms.OpenFileDialog; "
+        f"$f.Title = '{title}'; "
+        "$f.Filter = 'Excel Files (*.xlsx;*.xlsm)|*.xlsx;*.xlsm|All Files (*.*)|*.*'; "
+        "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.FileName }"
+    )
+    try:
+        res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, text=True, timeout=60)
+        val = res.stdout.strip()
+        if val and os.path.isfile(val):
+            return val
+    except Exception as e:
+        print(f"PowerShell file picker error: {e}")
+
+    return ""
+
+def scan_folder_files(folder_path: str):
+    if not folder_path or not os.path.exists(folder_path):
         return {"folder_path": "", "files": []}
 
-    # Scan folder for excel files
     files = []
     try:
         for file in os.listdir(folder_path):
             if (file.endswith(".xlsx") or file.endswith(".xlsm")) and not file.startswith("~$"):
                 fp = os.path.join(folder_path, file)
-                
-                # Fetch metadata
                 meta = processing.get_client_metadata(fp)
                 if not meta:
                     base = os.path.splitext(file)[0]
@@ -202,14 +288,11 @@ def select_folder():
                         "gstin": "",
                         "valuation": 0.0
                     }
-                
-                # Cached DB check
                 cached = database.get_client(meta["client_name"])
                 if cached:
                     for k in ["client_type", "state", "email", "cc_email", "address", "gstin"]:
                         if not meta.get(k) and cached.get(k):
                             meta[k] = cached[k]
-                            
                 meta["filename"] = fp
                 meta["status"] = "Pending"
                 files.append(meta)
@@ -217,6 +300,46 @@ def select_folder():
         raise HTTPException(status_code=500, detail=f"Error scanning folder: {e}")
 
     return {"folder_path": os.path.normpath(folder_path), "files": files}
+
+class FolderScanRequest(BaseModel):
+    folder_path: str
+
+@app.post("/api/folders/scan")
+def api_scan_folder(req: FolderScanRequest):
+    if not req.folder_path or not os.path.exists(req.folder_path):
+        raise HTTPException(status_code=400, detail=f"Folder not found: {req.folder_path}")
+    return scan_folder_files(req.folder_path)
+
+@app.post("/api/folders/select")
+def select_folder():
+    folder_path = pick_folder_native("Select Portfolio Folder")
+    if not folder_path:
+        return {"folder_path": "", "files": []}
+    return scan_folder_files(folder_path)
+
+@app.post("/api/folders/upload")
+async def upload_folder_files(files: List[UploadFile] = File(...)):
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    batch_dir = os.path.join(UPLOAD_DIR, f"folder_{timestamp}")
+    os.makedirs(batch_dir, exist_ok=True)
+    
+    saved_count = 0
+    for f in files:
+        fname = os.path.basename(f.filename or "")
+        if (fname.lower().endswith(".xlsx") or fname.lower().endswith(".xlsm")) and not fname.startswith("~$"):
+            dest = os.path.join(batch_dir, fname)
+            contents = await f.read()
+            with open(dest, "wb") as out_f:
+                out_f.write(contents)
+            saved_count += 1
+            
+    if saved_count == 0:
+        raise HTTPException(status_code=400, detail="No valid .xlsx or .xlsm portfolio files found in selection.")
+        
+    return scan_folder_files(batch_dir)
 
 def apply_ui_overrides_to_excel(excel_path, item):
     import openpyxl
@@ -230,11 +353,8 @@ def apply_ui_overrides_to_excel(excel_path, item):
                 wb.close()
                 return False
             
-            # Find the row for this client
             target_row = None
             client_name_key = str(item["client_name"]).strip()
-            
-            # Find the client name column dynamically
             col_name_idx = processing.get_mapped_col(cols, ["client_name", "name_of_client"], 3)
             
             for r in range(header_row + 1, ws.max_row + 1):
@@ -244,34 +364,27 @@ def apply_ui_overrides_to_excel(excel_path, item):
                     break
             
             if target_row:
-                # Update cells using mapped indices
-                # 1. Valuation
                 col_val_idx = processing.get_mapped_col(cols, ["value", "valuation", "value_of_shares", "aum"])
                 if col_val_idx:
                     ws.cell(row=target_row, column=col_val_idx).value = float(item["valuation"])
                 
-                # 2. Client Address
                 col_addr_idx = processing.get_mapped_col(cols, ["address_1", "address"])
                 if col_addr_idx:
                     ws.cell(row=target_row, column=col_addr_idx).value = item["address"]
                 
-                # 3. Client State
                 state_val = item["state"]
                 col_state_idx = processing.get_mapped_col(cols, ["state"])
                 if col_state_idx:
                     ws.cell(row=target_row, column=col_state_idx).value = state_val
                 
-                # 4. Client Email
                 col_email_idx = processing.get_mapped_col(cols, ["client_email_id", "email"])
                 if col_email_idx:
                     ws.cell(row=target_row, column=col_email_idx).value = item["email"]
                 
-                # 5. Invoice No
                 col_inv_idx = processing.get_mapped_col(cols, ["invoice_no", "invoice_number"])
                 if col_inv_idx:
                     ws.cell(row=target_row, column=col_inv_idx).value = item["invoice_number"]
                 
-                # Update taxable amount and tax formulas dynamically based on settings & state
                 from openpyxl.utils import get_column_letter
                 is_maharashtra = str(state_val).strip().lower() == "maharashtra"
                 
@@ -284,20 +397,16 @@ def apply_ui_overrides_to_excel(excel_path, item):
                 col_rate_idx = processing.get_mapped_col(cols, ["fee_@", "rate"])
                 col_taxable_idx = processing.get_mapped_col(cols, ["taxable_amt", "taxable_amount"])
                 
-                # Write dynamic Taxable Amount formula
                 if col_taxable_idx and col_val_idx and col_rate_idx:
                     val_let = get_column_letter(col_val_idx)
                     rate_let = get_column_letter(col_rate_idx)
-                    
                     excel_formula = formula_template.replace("Value", f"{val_let}{target_row}").replace("Rate", f"{rate_let}{target_row}")
                     if not excel_formula.startswith("="):
                         excel_formula = "=" + excel_formula
-                    
                     ws.cell(row=target_row, column=col_taxable_idx).value = excel_formula
                 
                 if col_taxable_idx:
                     tax_let = get_column_letter(col_taxable_idx)
-                    
                     col_cgst_idx = processing.get_mapped_col(cols, ["cgst"])
                     col_sgst_idx = processing.get_mapped_col(cols, ["sgst"])
                     col_igst_idx = processing.get_mapped_col(cols, ["igst", "isgt"])
@@ -314,12 +423,10 @@ def apply_ui_overrides_to_excel(excel_path, item):
                         cgst_let = get_column_letter(col_cgst_idx) if col_cgst_idx else ""
                         sgst_let = get_column_letter(col_sgst_idx) if col_sgst_idx else ""
                         igst_let = get_column_letter(col_igst_idx) if col_igst_idx else ""
-                        
                         formula_parts = [f"{tax_let}{target_row}"]
                         if cgst_let: formula_parts.append(f"{cgst_let}{target_row}")
                         if sgst_let: formula_parts.append(f"{sgst_let}{target_row}")
                         if igst_let: formula_parts.append(f"{igst_let}{target_row}")
-                        
                         ws.cell(row=target_row, column=col_total_idx).value = "=" + "+".join(formula_parts)
                 
                 wb.save(excel_path)
@@ -343,7 +450,6 @@ def read_calculated_values_from_excel(excel_path, client_name):
                 return None
             
             col_name_idx = processing.get_mapped_col(cols, ["client_name", "name_of_client"], 3)
-            
             for r in range(header_row + 1, ws.max_row + 1):
                 cell_val = ws.cell(row=r, column=col_name_idx).value
                 if cell_val and str(cell_val).strip().lower() == str(client_name).strip().lower():
@@ -355,12 +461,12 @@ def read_calculated_values_from_excel(excel_path, client_name):
                     col_inv_idx = processing.get_mapped_col(cols, ["invoice_no", "invoice_number"], 5)
                     
                     res = {
-                        "fee_amount": ws.cell(row=r, column=col_taxable_idx).value or 0.0,
-                        "cgst": ws.cell(row=r, column=col_cgst_idx).value or 0.0,
-                        "sgst": ws.cell(row=r, column=col_sgst_idx).value or 0.0,
-                        "igst": ws.cell(row=r, column=col_igst_idx).value or 0.0,
-                        "total_amount": ws.cell(row=r, column=col_total_idx).value or 0.0,
-                        "invoice_number": ws.cell(row=r, column=col_inv_idx).value or ""
+                        "fee_amount": processing.clean_numeric_str(ws.cell(row=r, column=col_taxable_idx).value),
+                        "cgst": processing.clean_numeric_str(ws.cell(row=r, column=col_cgst_idx).value),
+                        "sgst": processing.clean_numeric_str(ws.cell(row=r, column=col_sgst_idx).value),
+                        "igst": processing.clean_numeric_str(ws.cell(row=r, column=col_igst_idx).value),
+                        "total_amount": processing.clean_numeric_str(ws.cell(row=r, column=col_total_idx).value),
+                        "invoice_number": str(ws.cell(row=r, column=col_inv_idx).value or "").strip()
                     }
                     wb.close()
                     return res
@@ -376,19 +482,20 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
     completed = 0
     failed = 0
     
-    PROGRESS_STATE["running"] = True
-    PROGRESS_STATE["total"] = total
-    PROGRESS_STATE["completed"] = 0
-    PROGRESS_STATE["failed"] = 0
-    PROGRESS_STATE["status"] = "Running"
-    PROGRESS_STATE["logs"] = []
+    with PROGRESS_LOCK:
+        PROGRESS_STATE["running"] = True
+        PROGRESS_STATE["total"] = total
+        PROGRESS_STATE["completed"] = 0
+        PROGRESS_STATE["failed"] = 0
+        PROGRESS_STATE["status"] = "Running"
+        PROGRESS_STATE["logs"] = []
     
     log_progress("Starting batch billing automation run...", "info")
     
-    # 1. Create Batch
     try:
         batch_id = database.create_batch(folder_path, total)
-        PROGRESS_STATE["batch_id"] = batch_id
+        with PROGRESS_LOCK:
+            PROGRESS_STATE["batch_id"] = batch_id
         log_progress(f"Created batch record #{batch_id} in SQLite database.", "info")
     except Exception as e:
         log_progress(f"DB Batch logging failed: {e}", "error")
@@ -411,12 +518,26 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
     invoice_prefix = settings.get("invoice_prefix", "INV-2026-")
     try:
         next_inv_num = int(settings.get("next_invoice_number", "1"))
-    except:
+    except Exception:
         next_inv_num = 1
         
     log_progress(f"Configurations loaded. Fee engine mode: {fee_type.upper()}.", "info")
 
-    # Setup copies of Excel sheet if in sheet mode
+    # Persistent Excel COM session for batch performance
+    excel_app = None
+    if processing.EXCEL_AVAILABLE:
+        try:
+            import win32com.client
+            import pythoncom
+            pythoncom.CoInitialize()
+            excel_app = win32com.client.DispatchEx("Excel.Application")
+            excel_app.Visible = False
+            excel_app.DisplayAlerts = False
+            log_progress("Connected to Microsoft Excel COM automation engine.", "debug")
+        except Exception as com_err:
+            log_progress(f"Notice: Excel COM session init: {com_err}. Running in ReportLab mode.", "warning")
+            excel_app = None
+
     master_xlsx_copy = ""
     if import_mode == "sheet" and items:
         import shutil
@@ -429,206 +550,222 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
             log_progress(f"Failed to copy master sheet: {copy_err}", "error")
             master_xlsx_copy = first_item_filename
     
-    for idx, item in enumerate(items):
-        if not PROGRESS_STATE["running"]:
-            log_progress("Batch run cancelled by user.", "warning")
-            if batch_id > 0:
-                database.update_batch(batch_id, completed, failed, "Cancelled")
-            return
+    try:
+        for idx, item in enumerate(items):
+            if not PROGRESS_STATE["running"]:
+                log_progress("Batch run cancelled by user.", "warning")
+                if batch_id > 0:
+                    database.update_batch(batch_id, completed, failed, "Cancelled")
+                return
+                
+            filename_full = item["filename"]
+            client_name = item["client_name"]
+            filename_base = os.path.basename(filename_full)
+            is_regular = item.get("is_regular", True)
+            custom_message = item.get("custom_message", "")
             
-        filename_full = item["filename"]
-        client_name = item["client_name"]
-        filename_base = os.path.basename(filename_full)
-        is_regular = item.get("is_regular", True)
-        custom_message = item.get("custom_message", "")
-        
-        PROGRESS_STATE["active_file"] = f"{client_name} ({filename_base})"
-        
-        if import_mode == "sheet" and not is_regular:
-            log_progress(f"[{idx+1}/{total}] Skipping non-billable client: {client_name}", "info")
+            with PROGRESS_LOCK:
+                PROGRESS_STATE["active_file"] = f"{client_name} ({filename_base})"
+            
+            if import_mode == "sheet" and not is_regular:
+                log_progress(f"[{idx+1}/{total}] Skipping non-billable client: {client_name}", "info")
+                if batch_id > 0:
+                    try:
+                        db_item = {
+                            "batch_id": batch_id,
+                            "filename": filename_base,
+                            "client_name": client_name,
+                            "valuation": item["valuation"],
+                            "fee_amount": 0.0,
+                            "cgst": 0.0,
+                            "sgst": 0.0,
+                            "igst": 0.0,
+                            "total_amount": 0.0,
+                            "status": "Skipped (Not Billable)",
+                            "error_msg": "",
+                            "portfolio_pdf_path": "",
+                            "invoice_pdf_path": "",
+                            "email_status": "Skipped",
+                            "custom_message": custom_message,
+                            "invoice_number": ""
+                        }
+                        database.add_job_item(db_item)
+                    except Exception as db_ex:
+                        log_progress(f"Database logging error: {db_ex}", "error")
+                completed += 1
+                with PROGRESS_LOCK:
+                    PROGRESS_STATE["completed"] = completed
+                continue
+                
+            log_progress(f"[{idx+1}/{total}] Processing client: {client_name}", "info")
+            
+            safe_client_name = "".join([c for c in client_name if c.isalnum() or c in (" ", "_", "-")]).strip().replace(" ", "_")
+            flat_excel_path = os.path.join(static_xlsx_dir, f"{safe_client_name}_Processed.xlsx")
+            portfolio_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Portfolio.pdf")
+            invoice_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Invoice.pdf")
+            
+            error_msg = ""
+            success = False
+            valuation = float(item["valuation"] or 0.0)
+            fee_amount = 0.0
+            cgst, sgst, igst, total_amount = 0.0, 0.0, 0.0, 0.0
+            invoice_code = ""
+            
+            try:
+                if import_mode == "sheet":
+                    log_progress(" Applying UI overrides to master sheet...", "debug")
+                    apply_ui_overrides_to_excel(master_xlsx_copy, item)
+                    
+                    # 1. Search for Individual Portfolio document first (notes.md requirement)
+                    individual_portfolio = processing.find_individual_portfolio_file(folder_path, client_name)
+                    if individual_portfolio:
+                        log_progress(f" Found individual portfolio document: {os.path.basename(individual_portfolio)}", "debug")
+                        if individual_portfolio.lower().endswith(".pdf"):
+                            import shutil
+                            shutil.copy2(individual_portfolio, portfolio_pdf_path)
+                        else:
+                            processing.convert_excel_to_pdf(individual_portfolio, portfolio_pdf_path, excel_app=excel_app)
+                    elif item.get("matched_sheet"):
+                        matched_s = item.get("matched_sheet")
+                        log_progress(f" Generating portfolio report from worksheet: {matched_s}...", "debug")
+                        processing.convert_excel_to_pdf(master_xlsx_copy, portfolio_pdf_path, matched_s, excel_app=excel_app)
+                    else:
+                        portfolio_pdf_path = ""
+
+                    # 2. Generate Tax Invoice PDF
+                    if excel_app is not None:
+                        log_progress(" Generating tax invoice from Excel template...", "debug")
+                        try:
+                            processing.generate_invoice_pdf_via_excel(master_xlsx_copy, client_name, invoice_pdf_path, excel_app=excel_app)
+                            calc_vals = read_calculated_values_from_excel(master_xlsx_copy, client_name)
+                            if calc_vals and calc_vals["fee_amount"] > 0:
+                                fee_amount = calc_vals["fee_amount"]
+                                cgst = calc_vals["cgst"]
+                                sgst = calc_vals["sgst"]
+                                igst = calc_vals["igst"]
+                                total_amount = calc_vals["total_amount"]
+                                invoice_code = calc_vals["invoice_number"] or item.get("invoice_number")
+                        except Exception as excel_inv_err:
+                            log_progress(f" Excel COM invoice export note: {excel_inv_err}. Using ReportLab generator.", "warning")
+
+                    # If fee was not obtained from Excel calculation, compute dynamically via formula
+                    if fee_amount <= 0.0 or total_amount <= 0.0:
+                        formula_tmpl = settings.get("taxable_amt_formula", "Value * Rate / 4")
+                        fee_amount = processing.calculate_formula_fee(formula_tmpl, valuation, item.get("rate", 0.0))
+                        gst_calc = processing.calculate_gst(fee_amount, item["state"], gst_rates)
+                        cgst = gst_calc["cgst"]
+                        sgst = gst_calc["sgst"]
+                        igst = gst_calc["igst"]
+                        total_amount = gst_calc["total_amount"]
+                        
+                    if not invoice_code:
+                        invoice_code = item.get("invoice_number") or f"{invoice_prefix}{next_inv_num:04d}"
+                        next_inv_num += 1
+
+                    # Render ReportLab invoice if not generated via Excel COM
+                    if not os.path.exists(invoice_pdf_path) or os.path.getsize(invoice_pdf_path) == 0:
+                        invoice_data = {
+                            "invoice_number": invoice_code,
+                            "date": datetime.today().strftime('%d-%b-%Y'),
+                            "client_name": client_name,
+                            "client_address": item["address"],
+                            "client_state": item["state"],
+                            "client_gstin": item.get("gstin", ""),
+                            "valuation": valuation,
+                            "fee_amount": fee_amount,
+                            "cgst": cgst,
+                            "sgst": sgst,
+                            "igst": igst,
+                            "total_amount": total_amount,
+                            "particulars": item.get("particulars", ""),
+                            "rate": item.get("rate", 0.0),
+                            "period_start": item.get("period_start", ""),
+                            "period_end": item.get("period_end", "")
+                        }
+                        processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
+                else:
+                    # Folder mode logic
+                    log_progress(" Cleansing excel formulas...", "debug")
+                    processing.cleanse_formulas(filename_full, flat_excel_path)
+                    
+                    log_progress(" Converting portfolio worksheets to PDF...", "debug")
+                    processing.convert_excel_to_pdf(flat_excel_path, portfolio_pdf_path, excel_app=excel_app)
+                    
+                    fee_amount = processing.calculate_fees(valuation, fee_rules, fee_type)
+                    state = item["state"]
+                    gst_calc = processing.calculate_gst(fee_amount, state, gst_rates)
+                    cgst = gst_calc["cgst"]
+                    sgst = gst_calc["sgst"]
+                    igst = gst_calc["igst"]
+                    total_amount = gst_calc["total_amount"]
+                    
+                    invoice_code = f"{invoice_prefix}{next_inv_num:04d}"
+                    next_inv_num += 1
+                    
+                    invoice_data = {
+                        "invoice_number": invoice_code,
+                        "date": datetime.today().strftime('%d-%b-%Y'),
+                        "client_name": client_name,
+                        "client_address": item["address"],
+                        "client_state": state,
+                        "client_gstin": item.get("gstin", ""),
+                        "valuation": valuation,
+                        "fee_amount": fee_amount,
+                        "cgst": cgst,
+                        "sgst": sgst,
+                        "igst": igst,
+                        "total_amount": total_amount
+                    }
+                    processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
+
+                success = True
+                completed += 1
+                log_progress(f"Successfully generated billing package for {client_name}.", "success")
+            except Exception as ex:
+                failed += 1
+                success = False
+                error_msg = str(ex)
+                log_progress(f"Failed processing {client_name}: {error_msg}", "error")
+                
             if batch_id > 0:
                 try:
                     db_item = {
                         "batch_id": batch_id,
                         "filename": filename_base,
                         "client_name": client_name,
-                        "valuation": item["valuation"],
-                        "fee_amount": 0.0,
-                        "cgst": 0.0,
-                        "sgst": 0.0,
-                        "igst": 0.0,
-                        "total_amount": 0.0,
-                        "status": "Skipped (Not Billable)",
-                        "error_msg": "",
-                        "portfolio_pdf_path": "",
-                        "invoice_pdf_path": "",
-                        "email_status": "Skipped",
-                        "custom_message": custom_message
+                        "valuation": valuation,
+                        "fee_amount": fee_amount,
+                        "cgst": cgst,
+                        "sgst": sgst,
+                        "igst": igst,
+                        "total_amount": total_amount,
+                        "status": "Completed" if success else "Failed",
+                        "error_msg": error_msg if not success else "",
+                        "portfolio_pdf_path": portfolio_pdf_path if success and os.path.exists(portfolio_pdf_path) else "",
+                        "invoice_pdf_path": invoice_pdf_path if success and os.path.exists(invoice_pdf_path) else "",
+                        "email_status": "Pending",
+                        "custom_message": custom_message,
+                        "invoice_number": invoice_code if success else ""
                     }
                     database.add_job_item(db_item)
                 except Exception as db_ex:
                     log_progress(f"Database logging error: {db_ex}", "error")
-            completed += 1
-            PROGRESS_STATE["completed"] = completed
-            continue
-            
-        log_progress(f"[{idx+1}/{total}] Processing client: {client_name}", "info")
-        
-        safe_client_name = "".join([c for c in client_name if c.isalnum() or c in (" ", "_", "-")]).strip().replace(" ", "_")
-        flat_excel_path = os.path.join(static_xlsx_dir, f"{safe_client_name}_Processed.xlsx")
-        
-        matched_sheet = item.get("matched_sheet")
-        portfolio_pdf_path = ""
-        if import_mode == "sheet":
-            if matched_sheet:
-                portfolio_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Portfolio.pdf")
-        else:
-            portfolio_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Portfolio.pdf")
-            
-        invoice_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Invoice.pdf")
-        
-        error_msg = ""
-        success = False
-        
-        valuation = item["valuation"]
-        fee_amount = 0.0
-        cgst, sgst, igst, total_amount = 0.0, 0.0, 0.0, 0.0
-        
-        try:
-            if import_mode == "sheet":
-                log_progress(" Applying UI overrides to master sheet...", "debug")
-                apply_ui_overrides_to_excel(master_xlsx_copy, item)
-                
-                # Check Excel availability
-                if processing.EXCEL_AVAILABLE:
-                    log_progress(" Generating tax invoice from Excel template...", "debug")
-                    processing.generate_invoice_pdf_via_excel(master_xlsx_copy, client_name, invoice_pdf_path)
                     
-                    if matched_sheet:
-                        log_progress(f" Generating portfolio report from sheet: {matched_sheet}...", "debug")
-                        processing.convert_excel_to_pdf(master_xlsx_copy, portfolio_pdf_path, matched_sheet)
-                else:
-                    # Fallback ReportLab Generation
-                    log_progress(" Excel not available. Running fallback ReportLab generators...", "warning")
-                    # Set up invoice details
-                    invoice_data = {
-                        "invoice_number": item.get("invoice_number") or f"{invoice_prefix}{next_inv_num:04d}",
-                        "date": datetime.today().strftime('%d-%b-%Y'),
-                        "client_name": client_name,
-                        "client_address": item["address"],
-                        "client_state": item["state"],
-                        "client_gstin": item.get("gstin", ""),
-                        "valuation": item["valuation"],
-                        "fee_amount": item.get("fee_amount", 0.0),
-                        "cgst": item.get("cgst", 0.0),
-                        "sgst": item.get("sgst", 0.0),
-                        "igst": item.get("igst", 0.0),
-                        "total_amount": item.get("total_amount", 0.0),
-                        "particulars": item.get("particulars", ""),
-                        "rate": item.get("rate", 0.0),
-                        "period_start": item.get("period_start", ""),
-                        "period_end": item.get("period_end", "")
-                    }
-                    processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
-                    
-                    if matched_sheet:
-                        processing.convert_excel_to_pdf_fallback(master_xlsx_copy, portfolio_pdf_path, matched_sheet)
-
-                # Now read calculated values from Excel copy (if excel was run, it recalculated)
-                calc_vals = read_calculated_values_from_excel(master_xlsx_copy, client_name)
-                if calc_vals:
-                    fee_amount = calc_vals["fee_amount"]
-                    cgst = calc_vals["cgst"]
-                    sgst = calc_vals["sgst"]
-                    igst = calc_vals["igst"]
-                    total_amount = calc_vals["total_amount"]
-                    invoice_code = calc_vals["invoice_number"] or item.get("invoice_number") or f"{invoice_prefix}{next_inv_num:04d}"
-                else:
-                    # Use fallback values from item
-                    fee_amount = item.get("fee_amount", 0.0)
-                    cgst = item.get("cgst", 0.0)
-                    sgst = item.get("sgst", 0.0)
-                    igst = item.get("igst", 0.0)
-                    total_amount = item.get("total_amount", 0.0)
-                    invoice_code = item.get("invoice_number") or f"{invoice_prefix}{next_inv_num:04d}"
-            else:
-                # Folder mode logic (original logic)
-                log_progress(" Cleansing excel formulas...", "debug")
-                processing.cleanse_formulas(filename_full, flat_excel_path)
-                
-                log_progress(" Converting portfolio worksheets to PDF...", "debug")
-                processing.convert_excel_to_pdf(flat_excel_path, portfolio_pdf_path)
-                
-                # Fee
-                fee_amount = processing.calculate_fees(valuation, fee_rules, fee_type)
-                log_progress(f" Fee amount calculated: INR {fee_amount:,.2f}", "debug")
-                
-                # GST
-                state = item["state"]
-                gst_calc = processing.calculate_gst(fee_amount, state, gst_rates)
-                cgst = gst_calc["cgst"]
-                sgst = gst_calc["sgst"]
-                igst = gst_calc["igst"]
-                total_amount = gst_calc["total_amount"]
-                
-                # PDF Invoice
-                log_progress(" Rendering tax invoice document...", "debug")
-                invoice_code = f"{invoice_prefix}{next_inv_num:04d}"
-                today_str = datetime.today().strftime('%d-%b-%Y')
-                invoice_data = {
-                    "invoice_number": invoice_code,
-                    "date": today_str,
-                    "client_name": client_name,
-                    "client_address": item["address"],
-                    "client_state": state,
-                    "client_gstin": item["gstin"],
-                    "valuation": valuation,
-                    "fee_amount": fee_amount,
-                    "cgst": cgst,
-                    "sgst": sgst,
-                    "igst": igst,
-                    "total_amount": total_amount
-                }
-                processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
-                next_inv_num += 1
-            
-            success = True
-            completed += 1
-            log_progress(f"Successfully generated files for {client_name}.", "success")
-        except Exception as ex:
-            failed += 1
-            success = False
-            error_msg = str(ex)
-            log_progress(f"Failed processing {client_name}: {error_msg}", "error")
-            
-        # Write job item
-        if batch_id > 0:
+            with PROGRESS_LOCK:
+                PROGRESS_STATE["completed"] = completed
+                PROGRESS_STATE["failed"] = failed
+    finally:
+        if excel_app is not None:
             try:
-                db_item = {
-                    "batch_id": batch_id,
-                    "filename": filename_base,
-                    "client_name": client_name,
-                    "valuation": valuation,
-                    "fee_amount": fee_amount,
-                    "cgst": cgst,
-                    "sgst": sgst,
-                    "igst": igst,
-                    "total_amount": total_amount,
-                    "status": "Completed" if success else "Failed",
-                    "error_msg": error_msg if not success else "",
-                    "portfolio_pdf_path": portfolio_pdf_path if success else "",
-                    "invoice_pdf_path": invoice_pdf_path if success else "",
-                    "email_status": "Pending",
-                    "custom_message": custom_message,
-                    "invoice_number": invoice_code if success else ""
-                }
-                database.add_job_item(db_item)
-            except Exception as db_ex:
-                log_progress(f"Database logging error: {db_ex}", "error")
-                
-        PROGRESS_STATE["completed"] = completed
-        PROGRESS_STATE["failed"] = failed
-        
+                excel_app.Quit()
+            except Exception:
+                pass
+            try:
+                import pythoncom
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
     log_progress(f"Batch completed! Successful: {completed} | Failed: {failed}", "info")
     
     if batch_id > 0:
@@ -639,8 +776,9 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
         except Exception as db_ex:
             log_progress(f"DB finalize error: {db_ex}", "error")
             
-    PROGRESS_STATE["running"] = False
-    PROGRESS_STATE["status"] = "Completed"
+    with PROGRESS_LOCK:
+        PROGRESS_STATE["running"] = False
+        PROGRESS_STATE["status"] = "Completed"
 
 @app.post("/api/batch/process")
 def start_batch_processing(payload: BatchProcessRequest, background_tasks: BackgroundTasks):
@@ -649,29 +787,32 @@ def start_batch_processing(payload: BatchProcessRequest, background_tasks: Backg
         raise HTTPException(status_code=400, detail="A batch job is already running.")
         
     items_dict = [item.model_dump() for item in payload.items]
-    PROGRESS_STATE = {
-        "running": True,
-        "total": len(items_dict),
-        "completed": 0,
-        "failed": 0,
-        "status": "Starting",
-        "active_file": "",
-        "logs": [],
-        "batch_id": None
-    }
+    with PROGRESS_LOCK:
+        PROGRESS_STATE = {
+            "running": True,
+            "total": len(items_dict),
+            "completed": 0,
+            "failed": 0,
+            "status": "Starting",
+            "active_file": "",
+            "logs": [],
+            "batch_id": None
+        }
     background_tasks.add_task(run_batch_thread, payload.folder_path, items_dict, payload.import_mode)
     return {"status": "started"}
 
 @app.get("/api/batch/progress")
 def get_batch_progress():
-    return PROGRESS_STATE
+    with PROGRESS_LOCK:
+        return dict(PROGRESS_STATE)
 
 @app.post("/api/batch/cancel")
 def cancel_batch_processing():
     global PROGRESS_STATE
-    if PROGRESS_STATE["running"]:
-        PROGRESS_STATE["running"] = False
-        return {"status": "cancelling"}
+    with PROGRESS_LOCK:
+        if PROGRESS_STATE["running"]:
+            PROGRESS_STATE["running"] = False
+            return {"status": "cancelling"}
     return {"status": "not running"}
 
 # --- RESULTS HISTORY ---
@@ -689,7 +830,7 @@ def open_pdf_document(payload: Dict[str, str]):
     if not path or not os.path.exists(path):
         raise HTTPException(status_code=404, detail="File not found")
     try:
-        os.startfile(path)
+        open_system_path(path)
         return {"status": "opened"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -700,45 +841,39 @@ def open_folder_directory(payload: Dict[str, str]):
     if not path or not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Directory not found")
     try:
-        os.startfile(path)
+        open_system_path(path)
         return {"status": "opened"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- BULK EMAIL DELIVER ---
+# --- BULK EMAIL DISPATCH ---
 def run_email_thread(item_ids: List[int]):
     global EMAIL_STATE
-    EMAIL_STATE["running"] = True
-    EMAIL_STATE["logs"] = []
-    EMAIL_STATE["total"] = len(item_ids)
-    EMAIL_STATE["completed"] = 0
-    EMAIL_STATE["failed"] = 0
+    with EMAIL_LOCK:
+        EMAIL_STATE["running"] = True
+        EMAIL_STATE["logs"] = []
+        EMAIL_STATE["total"] = len(item_ids)
+        EMAIL_STATE["completed"] = 0
+        EMAIL_STATE["failed"] = 0
     
     settings = database.get_all_settings()
-    subject_template = settings.get("email_subject_template", "Portfolio Report & Invoice")
+    subject_template = settings.get("email_subject_template", "Portfolio Report & Invoice - {ClientName}")
     body_template = settings.get("email_body_template", "Dear {ClientName},\n...")
-    
-    # Retrieve job items
-    # For simplicity, we can fetch items from DB using SQL queries
-    conn = database.get_db_connection()
-    cursor = conn.cursor()
     
     for idx, item_id in enumerate(item_ids):
         if not EMAIL_STATE["running"]:
-            EMAIL_STATE["logs"].append("Delivery cancelled by user.")
+            with EMAIL_LOCK:
+                EMAIL_STATE["logs"].append("Delivery cancelled by user.")
             break
             
-        cursor.execute("SELECT * FROM job_items WHERE id = ?", (item_id,))
-        row = cursor.fetchone()
-        if not row:
-            EMAIL_STATE["failed"] += 1
-            EMAIL_STATE["logs"].append(f"Item #{item_id} not found in DB.")
+        item = database.get_job_item(item_id)
+        if not item:
+            with EMAIL_LOCK:
+                EMAIL_STATE["failed"] += 1
+                EMAIL_STATE["logs"].append(f"Item #{item_id} not found in database.")
             continue
             
-        item = dict(row)
         client_name = item["client_name"]
-        
-        # Load registry detail
         client_info = database.get_client(client_name)
         if not client_info:
             client_info = {
@@ -749,13 +884,16 @@ def run_email_thread(item_ids: List[int]):
             
         to_email = client_info.get("email")
         if not to_email:
-            EMAIL_STATE["failed"] += 1
-            EMAIL_STATE["logs"].append(f"Failed {client_name}: Email missing.")
+            with EMAIL_LOCK:
+                EMAIL_STATE["failed"] += 1
+                EMAIL_STATE["logs"].append(f"Failed {client_name}: Recipient email is missing.")
             database.update_job_item(item_id, {"email_status": "Failed: No Email"})
-            EMAIL_STATE["completed"] += 1
+            with EMAIL_LOCK:
+                EMAIL_STATE["completed"] += 1
             continue
             
-        EMAIL_STATE["logs"].append(f"Delivering email to {client_name} ({to_email})...")
+        with EMAIL_LOCK:
+            EMAIL_STATE["logs"].append(f"Delivering email to {client_name} ({to_email})...")
         
         attachments = []
         if item["portfolio_pdf_path"] and os.path.exists(item["portfolio_pdf_path"]):
@@ -764,18 +902,26 @@ def run_email_thread(item_ids: List[int]):
             attachments.append(item["invoice_pdf_path"])
             
         if not attachments:
-            EMAIL_STATE["failed"] += 1
-            EMAIL_STATE["logs"].append(f"Failed {client_name}: Documents missing.")
+            with EMAIL_LOCK:
+                EMAIL_STATE["failed"] += 1
+                EMAIL_STATE["logs"].append(f"Failed {client_name}: Generated PDF documents not found on disk.")
             database.update_job_item(item_id, {"email_status": "Failed: Missing Docs"})
-            EMAIL_STATE["completed"] += 1
+            with EMAIL_LOCK:
+                EMAIL_STATE["completed"] += 1
             continue
             
-        invoice_code = os.path.basename(item["invoice_pdf_path"]).replace("_Invoice.pdf", "") if item["invoice_pdf_path"] else "N/A"
+        # Correctly resolve invoice_number
+        invoice_code = item.get("invoice_number")
+        if not invoice_code and item.get("invoice_pdf_path"):
+            invoice_code = os.path.basename(item["invoice_pdf_path"]).replace("_Invoice.pdf", "")
+        if not invoice_code:
+            invoice_code = f"INV-#{item_id}"
+
         invoice_details = {
             "invoice_number": invoice_code,
-            "valuation": item["valuation"],
-            "fee_amount": item["fee_amount"],
-            "total_amount": item["total_amount"],
+            "valuation": float(item["valuation"] or 0.0),
+            "fee_amount": float(item["fee_amount"] or 0.0),
+            "total_amount": float(item["total_amount"] or 0.0),
             "custom_message": item.get("custom_message", "")
         }
         
@@ -789,54 +935,43 @@ def run_email_thread(item_ids: List[int]):
                 attachments,
                 display_outlook=False
             )
-            EMAIL_STATE["completed"] += 1
-            EMAIL_STATE["logs"].append(f"Success: Sent reports to {client_name}.")
+            with EMAIL_LOCK:
+                EMAIL_STATE["completed"] += 1
+                EMAIL_STATE["logs"].append(f"Success: Dispatched documents to {client_name}.")
             database.update_job_item(item_id, {"email_status": "Sent"})
         except Exception as e:
-            EMAIL_STATE["failed"] += 1
-            EMAIL_STATE["logs"].append(f"Failed {client_name}: {e}")
+            with EMAIL_LOCK:
+                EMAIL_STATE["failed"] += 1
+                EMAIL_STATE["logs"].append(f"Failed {client_name}: {e}")
             database.update_job_item(item_id, {"email_status": f"Failed: {str(e)[:40]}"})
             
-    conn.close()
-    EMAIL_STATE["running"] = False
+    with EMAIL_LOCK:
+        EMAIL_STATE["running"] = False
 
 @app.post("/api/email/send")
 def send_bulk_emails(payload: EmailSendRequest, background_tasks: BackgroundTasks):
     global EMAIL_STATE
     if EMAIL_STATE["running"]:
-        raise HTTPException(status_code=400, detail="Email sender is busy.")
+        raise HTTPException(status_code=400, detail="Email sender is currently active.")
     background_tasks.add_task(run_email_thread, payload.item_ids)
     return {"status": "started"}
 
 @app.get("/api/email/progress")
 def get_email_progress():
-    return EMAIL_STATE
+    with EMAIL_LOCK:
+        return dict(EMAIL_STATE)
 
 # --- EXCEL SINGLE SHEET PARSE & LEDGER ENDPOINTS ---
-@app.post("/api/excel/select")
-def select_excel_file():
-    excel_path = ""
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        root.wm_attributes('-topmost', 1)
-        excel_path = filedialog.askopenfilename(
-            title="Select Billing Excel Sheet",
-            filetypes=[("Excel Files", "*.xlsx *.xlsm")]
-        )
-        root.destroy()
-    except Exception as e:
-        print(f"Error opening file picker: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to open native file picker: {e}")
-
-    if not excel_path:
-        return {"folder_path": "", "files": []}
+def scan_excel_file_path(excel_path: str):
+    if not excel_path or not os.path.exists(excel_path):
+        return {"folder_path": "", "excel_path": "", "files": []}
 
     try:
         company_details, clients = processing.parse_single_excel_sheet(excel_path)
         if company_details:
-            database.save_all_settings(company_details)
-        # Apply cached registry check for client info if details are missing
+            clean_comp = {k: v for k, v in company_details.items() if v}
+            if clean_comp:
+                database.save_all_settings(clean_comp)
         for client in clients:
             cached = database.get_client(client["client_name"])
             if cached:
@@ -848,6 +983,39 @@ def select_excel_file():
 
     folder_path = os.path.dirname(excel_path)
     return {"folder_path": os.path.normpath(folder_path), "excel_path": excel_path, "files": clients}
+
+class ExcelScanRequest(BaseModel):
+    excel_path: str
+
+@app.post("/api/excel/scan")
+def api_scan_excel(req: ExcelScanRequest):
+    if not req.excel_path or not os.path.exists(req.excel_path):
+        raise HTTPException(status_code=400, detail=f"Excel file not found: {req.excel_path}")
+    return scan_excel_file_path(req.excel_path)
+
+@app.post("/api/excel/select")
+def select_excel_file():
+    excel_path = pick_file_native("Select Billing Excel Sheet")
+    if not excel_path:
+        return {"folder_path": "", "excel_path": "", "files": []}
+    return scan_excel_file_path(excel_path)
+
+@app.post("/api/excel/upload")
+async def upload_excel_file(file: UploadFile = File(...)):
+    fname = os.path.basename(file.filename or "")
+    if not fname.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(status_code=400, detail="Only .xlsx or .xlsm Excel files are supported.")
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    batch_dir = os.path.join(UPLOAD_DIR, f"excel_{timestamp}")
+    os.makedirs(batch_dir, exist_ok=True)
+    
+    file_path = os.path.join(batch_dir, fname)
+    contents = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(contents)
+        
+    return scan_excel_file_path(file_path)
 
 @app.get("/api/invoices/all")
 def get_all_invoices():
@@ -883,27 +1051,17 @@ class JobItemEditPayload(BaseModel):
 @app.post("/api/invoices/{item_id}/edit")
 def edit_job_item(item_id: int, payload: JobItemEditPayload):
     try:
-        conn = database.get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM job_items WHERE id = ?", (item_id,))
-        row = cursor.fetchone()
-        if not row:
-            conn.close()
+        item = database.get_job_item(item_id)
+        if not item:
             raise HTTPException(status_code=404, detail="Invoice record not found")
             
-        item = dict(row)
         batch_id = item["batch_id"]
+        batch_row = database.get_batch(batch_id) if batch_id else None
+        folder_path = batch_row["folder_path"] if batch_row else os.path.expanduser("~")
         
-        # Get batch folder_path
-        cursor.execute("SELECT folder_path FROM batches WHERE id = ?", (batch_id,))
-        batch_row = cursor.fetchone()
-        folder_path = batch_row["folder_path"] if batch_row else "."
-        conn.close()
-        
-        # Recalculate fee and tax
-        valuation = payload.valuation
-        fee_rules = database.get_fee_rules()
+        valuation = float(payload.valuation or 0.0)
         settings = database.get_all_settings()
+        fee_rules = database.get_fee_rules()
         fee_type = settings.get("fee_calculation_type", "flat")
         gst_rates = {
             "gst_rate_cgst": settings.get("gst_rate_cgst", "9.0"),
@@ -917,7 +1075,14 @@ def edit_job_item(item_id: int, payload: JobItemEditPayload):
             status = "Skipped (Not Billable)"
             invoice_pdf_path = ""
         else:
-            fee_amount = processing.calculate_fees(valuation, fee_rules, fee_type)
+            # Check if formula is set
+            formula_tmpl = settings.get("taxable_amt_formula")
+            if formula_tmpl and "Rate" in formula_tmpl:
+                # Use client existing rate if available
+                fee_amount = processing.calculate_formula_fee(formula_tmpl, valuation, 0.0025)
+            else:
+                fee_amount = processing.calculate_fees(valuation, fee_rules, fee_type)
+                
             gst_calc = processing.calculate_gst(fee_amount, payload.state, gst_rates)
             cgst = gst_calc["cgst"]
             sgst = gst_calc["sgst"]
@@ -925,19 +1090,16 @@ def edit_job_item(item_id: int, payload: JobItemEditPayload):
             total_amount = gst_calc["total_amount"]
             status = "Completed"
             
-            # Paths
             pdf_dir = os.path.join(folder_path, "pdf")
             os.makedirs(pdf_dir, exist_ok=True)
             safe_client_name = "".join([c for c in payload.client_name if c.isalnum() or c in (" ", "_", "-")]).strip().replace(" ", "_")
             invoice_pdf_path = os.path.join(pdf_dir, f"{safe_client_name}_Invoice.pdf")
             
-            # Generate invoice number if not existing
             invoice_code = item.get("invoice_number")
             if not invoice_code:
                 invoice_prefix = settings.get("invoice_prefix", "INV-2026-")
                 invoice_code = f"{invoice_prefix}{item_id:04d}"
                 
-            # Render PDF Invoice
             invoice_data = {
                 "invoice_number": invoice_code,
                 "date": datetime.today().strftime('%d-%b-%Y'),
@@ -954,7 +1116,6 @@ def edit_job_item(item_id: int, payload: JobItemEditPayload):
             }
             processing.generate_invoice_pdf(invoice_pdf_path, invoice_data, settings)
             
-        # Update client profile in registry
         database.save_client({
             "client_name": payload.client_name,
             "client_type": payload.client_type,
@@ -965,7 +1126,6 @@ def edit_job_item(item_id: int, payload: JobItemEditPayload):
             "gstin": payload.gstin
         })
         
-        # Update database record
         updates = {
             "client_name": payload.client_name,
             "valuation": valuation,
@@ -980,7 +1140,6 @@ def edit_job_item(item_id: int, payload: JobItemEditPayload):
             "email_status": "Pending" if is_regular else "Skipped"
         }
         database.update_job_item(item_id, updates)
-        
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -989,30 +1148,31 @@ def edit_job_item(item_id: int, payload: JobItemEditPayload):
 def export_billing_ledger(payload: Dict[str, str]):
     folder_path = payload.get("folder_path")
     if not folder_path or not os.path.exists(folder_path):
-        raise HTTPException(status_code=400, detail="Invalid output folder path")
+        # Auto-fallback to Downloads or Documents
+        downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+        if os.path.exists(downloads):
+            folder_path = downloads
+        else:
+            folder_path = os.path.expanduser("~")
         
     try:
-        conn = database.get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM job_items ORDER BY id DESC")
-        rows = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        
+        rows = database.get_all_job_items(1000)
         if not rows:
-            raise HTTPException(status_code=400, detail="No billing data to export")
+            raise HTTPException(status_code=400, detail="No billing data found to export.")
             
         import pandas as pd
         data = []
         for r in rows:
             data.append({
                 "Invoice ID": r["id"],
+                "Invoice No": r.get("invoice_number", ""),
                 "Client Name": r["client_name"],
-                "Valuation (INR)": r["valuation"],
-                "Fee Amount (INR)": r["fee_amount"],
-                "CGST (INR)": r["cgst"],
-                "SGST (INR)": r["sgst"],
-                "IGST (INR)": r["igst"],
-                "Total Invoice Value (INR)": r["total_amount"],
+                "Valuation (INR)": r["valuation"] or 0.0,
+                "Fee Amount (INR)": r["fee_amount"] or 0.0,
+                "CGST (INR)": r["cgst"] or 0.0,
+                "SGST (INR)": r["sgst"] or 0.0,
+                "IGST (INR)": r["igst"] or 0.0,
+                "Total Invoice Value (INR)": r["total_amount"] or 0.0,
                 "Generation Status": r["status"],
                 "Email Status": r["email_status"],
                 "Payment Status": "Paid" if r["is_paid"] == 1 else "Unpaid",
@@ -1020,15 +1180,12 @@ def export_billing_ledger(payload: Dict[str, str]):
             })
             
         df = pd.DataFrame(data)
-        
         pdf_dir = os.path.join(folder_path, "pdf")
         os.makedirs(pdf_dir, exist_ok=True)
         export_path = os.path.join(pdf_dir, "Master_Billing_Ledger.xlsx")
         
         with pd.ExcelWriter(export_path, engine='openpyxl') as writer:
             df.to_excel(writer, sheet_name='Billing Ledger', index=False)
-            
-            workbook = writer.book
             worksheet = writer.sheets['Billing Ledger']
             
             from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -1058,11 +1215,11 @@ def export_billing_ledger(payload: Dict[str, str]):
                         cell.font = header_font
                         cell.alignment = align_center
                     else:
-                        if cell.column in [3, 4, 5, 6, 7, 8]:
+                        if cell.column in [4, 5, 6, 7, 8, 9]:
                             cell.alignment = align_right
                             if cell.value is not None:
                                 cell.number_format = '₹#,##0.00'
-                        elif cell.column in [1, 9, 10, 11, 12]:
+                        elif cell.column in [1, 2, 10, 11, 12, 13]:
                             cell.alignment = align_center
                         else:
                             cell.alignment = align_left
@@ -1073,15 +1230,11 @@ def export_billing_ledger(payload: Dict[str, str]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
-
 # --- STATIC FILES MOUNT ---
-# In production, we mount the frontend/dist directory to serve React SPA assets.
 base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 dist_dir = os.path.normpath(os.path.join(base_dir, "frontend", "dist"))
 
-# Mount if the directory exists (it will exist after npm run build)
 if os.path.exists(dist_dir):
     app.mount("/", StaticFiles(directory=dist_dir, html=True), name="static")
 else:
     print(f"Warning: React static distribution folder not found at {dist_dir}. Serving API only.")
-

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import API_BASE from '../api';
 import { 
   FolderOpen, 
@@ -13,7 +13,12 @@ import {
 } from 'lucide-react';
 
 export default function Home({ setTab, setQueue, setFolderPath, folderPath, queue, setImportMode }) {
-  const [loading, setLoading] = useState(false);
+  const fileInputRef = useRef(null);
+  const folderInputRef = useRef(null);
+  const [folderLoading, setFolderLoading] = useState(false);
+  const [sheetLoading, setSheetLoading] = useState(false);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [manualPath, setManualPath] = useState('');
   const [recentBatches, setRecentBatches] = useState([]);
   const [stats, setStats] = useState({
     totalBatches: 0,
@@ -63,49 +68,131 @@ export default function Home({ setTab, setQueue, setFolderPath, folderPath, queu
     }
   };
 
-  const handleSelectFolder = async () => {
-    setLoading(true);
+  const handleScanManualPath = async (targetPath) => {
+    const pathToScan = (targetPath !== undefined ? targetPath : manualPath).trim();
+    if (!pathToScan) {
+      setError("Please enter a valid directory or Excel file path.");
+      return;
+    }
+    setScanLoading(true);
     setError('');
     try {
-      const res = await fetch(`${API_BASE}/api/folders/select`, {
+      const isExcel = pathToScan.endsWith('.xlsx') || pathToScan.endsWith('.xlsm');
+      const endpoint = isExcel ? `${API_BASE}/api/excel/scan` : `${API_BASE}/api/folders/scan`;
+      const body = isExcel ? { excel_path: pathToScan } : { folder_path: pathToScan };
+
+      const res = await fetch(endpoint, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
       });
       if (!res.ok) {
-        throw new Error(await res.text() || "Failed to open folder picker.");
+        const errText = await res.text();
+        throw new Error(errText || "Path could not be scanned. Please check that the path exists.");
       }
       const data = await res.json();
-      if (data.folder_path) {
-        setFolderPath(data.folder_path);
+      if (data.files && data.files.length > 0) {
+        setFolderPath(data.folder_path || pathToScan);
         setQueue(data.files || []);
-        setImportMode('folder');
+        setImportMode(isExcel ? 'sheet' : 'folder');
+      } else {
+        setError("No portfolio workbooks (.xlsx/.xlsm) found in that directory.");
       }
     } catch (err) {
-      setError(err.message || 'Failed to select folder.');
+      setError(err.message || "Failed to scan specified path.");
     } finally {
-      setLoading(false);
+      setScanLoading(false);
     }
   };
 
-  const handleSelectExcelSheet = async () => {
-    setLoading(true);
+  const handleBrowserFileClick = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleBrowserFolderClick = () => {
+    if (folderInputRef.current) {
+      folderInputRef.current.value = '';
+      folderInputRef.current.click();
+    }
+  };
+
+  const handleBrowserFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setSheetLoading(true);
     setError('');
     try {
-      const res = await fetch(`${API_BASE}/api/excel/select`, {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch(`${API_BASE}/api/excel/upload`, {
         method: 'POST',
+        body: formData
       });
       if (!res.ok) {
-        throw new Error(await res.text() || "Failed to open file picker.");
+        const errText = await res.text();
+        throw new Error(errText || "Failed to upload and parse Excel sheet.");
       }
       const data = await res.json();
-      if (data.excel_path) {
-        setFolderPath(data.folder_path); // Use folder containing Excel for output pdfs
+      if (data.excel_path && data.files) {
+        setFolderPath(data.folder_path);
         setQueue(data.files || []);
         setImportMode('sheet');
+      } else {
+        throw new Error("No client billing rows recognized in the uploaded sheet.");
       }
     } catch (err) {
-      setError(err.message || 'Failed to select Excel file.');
+      setError(err.message || 'Failed to process Excel file.');
     } finally {
-      setLoading(false);
+      setSheetLoading(false);
+    }
+  };
+
+  const handleBrowserFolderChange = async (e) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setFolderLoading(true);
+    setError('');
+    try {
+      const formData = new FormData();
+      let excelFilesCount = 0;
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        if (f.name.endsWith('.xlsx') || f.name.endsWith('.xlsm')) {
+          formData.append('files', f);
+          excelFilesCount++;
+        }
+      }
+
+      if (excelFilesCount === 0) {
+        throw new Error("No .xlsx or .xlsm files found in selected folder.");
+      }
+
+      const res = await fetch(`${API_BASE}/api/folders/upload`, {
+        method: 'POST',
+        body: formData
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || "Failed to upload and scan portfolio folder.");
+      }
+      const data = await res.json();
+      if (data.files && data.files.length > 0) {
+        setFolderPath(data.folder_path);
+        setQueue(data.files || []);
+        setImportMode('folder');
+      } else {
+        throw new Error("No valid portfolio files recognized in the folder.");
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to process folder.');
+    } finally {
+      setFolderLoading(false);
     }
   };
 
@@ -130,6 +217,44 @@ export default function Home({ setTab, setQueue, setFolderPath, folderPath, queu
         </div>
       </div>
 
+      {/* Metrics Row */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-surface-container/30 glass-panel rounded-xl p-4 border border-outline-variant/10">
+          <div className="flex items-center justify-between text-on-surface-variant mb-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider">Total Batches</span>
+            <TrendingUp className="h-4 w-4 text-primary" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-on-surface">{stats.totalBatches}</div>
+          <p className="text-[10px] text-on-surface-variant/70 mt-1">Ingested execution runs</p>
+        </div>
+
+        <div className="bg-surface-container/30 glass-panel rounded-xl p-4 border border-outline-variant/10">
+          <div className="flex items-center justify-between text-on-surface-variant mb-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider">Processed Files</span>
+            <CheckCircle className="h-4 w-4 text-secondary" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-secondary">{stats.successfulFiles}</div>
+          <p className="text-[10px] text-on-surface-variant/70 mt-1">Invoices generated</p>
+        </div>
+
+        <div className="bg-surface-container/30 glass-panel rounded-xl p-4 border border-outline-variant/10">
+          <div className="flex items-center justify-between text-on-surface-variant mb-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider">Failed / Incomplete</span>
+            <AlertTriangle className="h-4 w-4 text-error" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-error">{stats.failedFiles}</div>
+          <p className="text-[10px] text-on-surface-variant/70 mt-1">Requires attention</p>
+        </div>
+
+        <div className="bg-surface-container/30 glass-panel rounded-xl p-4 border border-outline-variant/10">
+          <div className="flex items-center justify-between text-on-surface-variant mb-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider">Success Rate</span>
+            <Percent className="h-4 w-4 text-primary" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-on-surface">{stats.successRate}%</div>
+          <p className="text-[10px] text-on-surface-variant/70 mt-1">Run reliability</p>
+        </div>
+      </div>
 
       {/* Main Ingest & History Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -198,31 +323,85 @@ export default function Home({ setTab, setQueue, setFolderPath, folderPath, queu
                 </button>
               </div>
             ) : (
-              <div className="space-y-3">
-                <button
-                  onClick={handleSelectFolder}
-                  disabled={loading}
-                  className="w-full bg-primary text-on-primary hover:bg-primary/90 py-3 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-primary/10 cursor-pointer active:scale-95 disabled:opacity-50"
-                >
-                  {loading ? 'Opening Dialog...' : (
-                    <>
-                      <FolderOpen className="h-4 w-4" />
-                      Scan Folder (Multi-file)
-                    </>
-                  )}
-                </button>
-                <button
-                  onClick={handleSelectExcelSheet}
-                  disabled={loading}
-                  className="w-full bg-surface-lowest text-on-surface hover:bg-surface-container-high py-3 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all border border-outline-variant/30 cursor-pointer active:scale-95 disabled:opacity-50"
-                >
-                  {loading ? 'Opening Dialog...' : (
-                    <>
-                      <FolderOpen className="h-4 w-4 text-primary" />
-                      Import Billing Sheet (Single-sheet)
-                    </>
-                  )}
-                </button>
+              <div className="space-y-4">
+                {/* Hidden native browser file/folder pickers */}
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  accept=".xlsx,.xlsm"
+                  style={{ display: 'none' }}
+                  onChange={handleBrowserFileChange}
+                />
+                <input
+                  type="file"
+                  ref={folderInputRef}
+                  webkitdirectory=""
+                  directory=""
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={handleBrowserFolderChange}
+                />
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    onClick={handleBrowserFolderClick}
+                    disabled={folderLoading || sheetLoading || scanLoading}
+                    className="w-full bg-primary text-on-primary hover:bg-primary/90 py-2.5 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-md shadow-primary/10 cursor-pointer active:scale-95 disabled:opacity-50"
+                  >
+                    {folderLoading ? (
+                      <span>Loading...</span>
+                    ) : (
+                      <>
+                        <FolderOpen className="h-3.5 w-3.5" />
+                        <span>Browse Folder</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={handleBrowserFileClick}
+                    disabled={folderLoading || sheetLoading || scanLoading}
+                    className="w-full bg-surface-lowest text-on-surface hover:bg-surface-container-high py-2.5 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all border border-outline-variant/30 cursor-pointer active:scale-95 disabled:opacity-50"
+                  >
+                    {sheetLoading ? (
+                      <span>Loading...</span>
+                    ) : (
+                      <>
+                        <FolderOpen className="h-3.5 w-3.5 text-primary" />
+                        <span>Browse Sheet</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <div className="pt-2 border-t border-outline-variant/20 space-y-2">
+                  <div className="flex items-center justify-between text-[10px] text-on-surface-variant font-bold uppercase tracking-wider">
+                    <span>Or Direct Folder / File Path</span>
+                    <button
+                      type="button"
+                      onClick={() => handleScanManualPath("test_data")}
+                      className="text-[10px] text-primary hover:underline font-bold lowercase normal-case cursor-pointer"
+                    >
+                      ⚡ load test_data
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={manualPath}
+                      onChange={(e) => setManualPath(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleScanManualPath()}
+                      placeholder="e.g. test_data or D:\path\to\portfolios"
+                      className="flex-1 bg-surface-lowest border border-[#232d3f]/60 rounded-lg px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary font-mono"
+                    />
+                    <button
+                      onClick={() => handleScanManualPath()}
+                      disabled={scanLoading || !manualPath.trim()}
+                      className="bg-primary/20 hover:bg-primary/30 text-primary border border-primary/30 px-3 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-40 cursor-pointer whitespace-nowrap"
+                    >
+                      {scanLoading ? 'Scanning...' : 'Scan'}
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
           </div>

@@ -544,10 +544,13 @@ export default function Results({ batchId, setBatchId }) {
                 {items.map((item) => {
                   const isSuccess = item.status === 'Completed';
                   const isSelected = selectedIds.includes(item.id);
-                  const cgst_sgst = item.cgst > 0 ? (item.cgst + item.sgst) : 0.0;
-                  const gstText = item.cgst > 0 
-                    ? `CGST+SGST (${item.cgst.toLocaleString('en-IN', {maximumFractionDigits:1})})` 
-                    : `IGST (${item.igst.toLocaleString('en-IN', {maximumFractionDigits:1})})`;
+                  const cgst_val = item.cgst || 0;
+                  const sgst_val = item.sgst || 0;
+                  const igst_val = item.igst || 0;
+                  const cgst_sgst = cgst_val > 0 ? (cgst_val + sgst_val) : 0.0;
+                  const gstText = cgst_val > 0 
+                    ? `CGST+SGST (${cgst_val.toLocaleString('en-IN', {maximumFractionDigits:1})})` 
+                    : `IGST (${igst_val.toLocaleString('en-IN', {maximumFractionDigits:1})})`;
                   return (
                     <tr key={item.id} className={`hover:bg-surface-container-highest/30 transition-colors ${!isSuccess ? 'opacity-50' : ''}`}>
                       <td className="py-4 px-6 whitespace-nowrap">
@@ -601,21 +604,21 @@ export default function Results({ batchId, setBatchId }) {
                           />
                         ) : (
                           <div className="flex items-center justify-between gap-1.5">
-                            <span>₹{item.valuation.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                            <span>₹{(item.valuation || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
                           </div>
                         )}
                       </td>
                       <td className="py-4 px-6 whitespace-nowrap text-on-surface font-mono">
-                        ₹{item.fee_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        ₹{(item.fee_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="py-4 px-6 whitespace-nowrap">
                         <span className="block font-mono text-on-surface font-semibold">
-                          ₹{(cgst_sgst > 0 ? cgst_sgst : item.igst).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          ₹{(cgst_sgst > 0 ? cgst_sgst : igst_val).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                         <span className="text-[9px] text-on-surface-variant font-medium">{gstText}</span>
                       </td>
                       <td className="py-4 px-6 whitespace-nowrap font-bold text-on-surface font-mono">
-                        ₹{item.total_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        ₹{(item.total_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="py-4 px-6 text-center">
                         {cellLoading === item.id ? (
