@@ -17,6 +17,7 @@ from tkinter import filedialog
 import backend.database as database
 import backend.processing as processing
 import backend.email_service as email_service
+from backend.email_dispatcher import DISPATCHER
 
 UPLOAD_DIR = os.path.join(os.path.expanduser("~"), ".portfolio_billing", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -669,7 +670,13 @@ def run_batch_thread(folder_path: str, items: List[Dict[str, Any]], import_mode:
             if not PROGRESS_STATE["running"]:
                 log_progress("Batch run cancelled by user.", "warning")
                 if batch_id > 0:
-                    database.update_batch(batch_id, completed, failed, "Cancelled")
+                    try:
+                        database.save_setting("next_invoice_number", next_inv_num)
+                        database.update_batch(batch_id, completed, failed, "Cancelled")
+                    except Exception as cancel_db_err:
+                        log_progress(f"DB update on cancel error: {cancel_db_err}", "error")
+                with PROGRESS_LOCK:
+                    PROGRESS_STATE["status"] = "Cancelled"
                 return
                 
             filename_full = item["filename"]
@@ -1110,190 +1117,47 @@ def open_folder_directory(payload: Dict[str, str]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- BULK EMAIL DISPATCH ---
-def run_email_thread(item_ids: List[int]):
-    global EMAIL_STATE
-    with EMAIL_LOCK:
-        EMAIL_STATE["running"] = True
-        EMAIL_STATE["logs"] = []
-        EMAIL_STATE["total"] = len(item_ids)
-        EMAIL_STATE["completed"] = 0
-        EMAIL_STATE["failed"] = 0
-    
-    settings = database.get_all_settings()
-    subject_template = settings.get("email_subject_template", "Portfolio Report & Invoice - {ClientName}")
-    body_template = settings.get("email_body_template", "Dear {ClientName},\n...")
-    
-    for idx, item_id in enumerate(item_ids):
-        if not EMAIL_STATE["running"]:
-            with EMAIL_LOCK:
-                EMAIL_STATE["logs"].append("Delivery cancelled by user.")
-            break
-            
-        item = database.get_job_item(item_id)
-        if not item:
-            with EMAIL_LOCK:
-                EMAIL_STATE["failed"] += 1
-                EMAIL_STATE["logs"].append(f"Item #{item_id} not found in database.")
-            continue
-            
-        client_name = item["client_name"]
-        client_info = database.get_client(client_name)
-        if not client_info:
-            client_info = {
-                "client_name": client_name,
-                "email": item.get("email", ""),
-                "cc_email": item.get("cc_email", ""),
-            }
-        else:
-            client_info = dict(client_info)
-            client_info["cc_email"] = item.get("cc_email", "")
-            
-        to_email = client_info.get("email")
-        if not to_email:
-            with EMAIL_LOCK:
-                EMAIL_STATE["failed"] += 1
-                EMAIL_STATE["logs"].append(f"Failed {client_name}: Recipient email is missing.")
-            database.update_job_item(item_id, {"email_status": "Failed: No Email"})
-            with EMAIL_LOCK:
-                EMAIL_STATE["completed"] += 1
-            continue
-            
-        with EMAIL_LOCK:
-            EMAIL_STATE["logs"].append(f"Delivering email to {client_name} ({to_email})...")
-        
-        attachments = []
-        if item["portfolio_pdf_path"] and os.path.exists(item["portfolio_pdf_path"]):
-            attachments.append(item["portfolio_pdf_path"])
-        if item["invoice_pdf_path"] and os.path.exists(item["invoice_pdf_path"]):
-            attachments.append(item["invoice_pdf_path"])
-        # Append global QR code if configured
-        qr_path = settings.get("email_qr_path", "").strip()
-        if qr_path and os.path.exists(qr_path):
-            attachments.append(qr_path)
-            
-        if not attachments:
-            with EMAIL_LOCK:
-                EMAIL_STATE["failed"] += 1
-                EMAIL_STATE["logs"].append(f"Failed {client_name}: Generated PDF documents not found on disk.")
-            database.update_job_item(item_id, {"email_status": "Failed: Missing Docs"})
-            with EMAIL_LOCK:
-                EMAIL_STATE["completed"] += 1
-            continue
-            
-        # Use stored invoice_number field; fall back to filename or prefix+id only if missing
-        invoice_code = (item.get("invoice_number") or "").strip()
-        if not invoice_code and item.get("invoice_pdf_path"):
-            invoice_code = os.path.basename(item["invoice_pdf_path"]).replace("_Invoice.pdf", "")
-        if not invoice_code:
-            invoice_code = f"{settings.get('invoice_prefix', 'INV-')}{item_id:04d}"
-            
-        credit_applied_val = float(item.get("credit_applied", 0.0) or 0.0)
-        custom_msg = item.get("custom_message", "") or ""
-        if credit_applied_val > 0:
-            credit_note = f"Note: A prior credit of INR {credit_applied_val:,.2f} has been applied to this invoice. The net amount payable is INR {max(0.0, float(item['total_amount'] or 0.0) - credit_applied_val):,.2f}."
-            if custom_msg:
-                custom_msg = f"{credit_note}\n\n{custom_msg}"
-            else:
-                custom_msg = credit_note
-
-        invoice_details = {
-            "invoice_number": invoice_code,
-            "valuation": float(item["valuation"] or 0.0),
-            "fee_amount": float(item["fee_amount"] or 0.0),
-            "total_amount": float(item["total_amount"] or 0.0),
-            "custom_message": custom_msg
-        }
-        
-        try:
-            context = {
-                "ClientName": client_name,
-                "InvoiceNumber": invoice_code,
-                "Valuation": item["valuation"],
-                "FeeAmount": item["fee_amount"],
-                "TotalAmount": item["total_amount"],
-                "CustomMessage": custom_msg
-            }
-            try:
-                subject = subject_template.format(**context)
-                body = body_template.format(**context)
-                custom_msg = item.get("custom_message", "")
-                if custom_msg and "{CustomMessage}" not in body_template:
-                    if "Best Regards" in body:
-                        body = body.replace("Best Regards", f"{custom_msg}\n\nBest Regards")
-                    else:
-                        body = f"{body}\n\n{custom_msg}"
-            except:
-                subject = subject_template
-                body = body_template
-
-            email_service.send_client_email(
-                settings,
-                client_info,
-                subject_template,
-                body_template,
-                invoice_details,
-                attachments,
-                display_outlook=False
-            )
-            with EMAIL_LOCK:
-                EMAIL_STATE["completed"] += 1
-                EMAIL_STATE["logs"].append(f"Success: Dispatched documents to {client_name}.")
-            database.update_job_item(item_id, {"email_status": "Sent"})
-            
-            import json
-            database.add_email_log({
-                "client_name": client_name,
-                "recipient_email": to_email,
-                "cc_email": client_info.get("cc_email", ""),
-                "subject": subject,
-                "body": body,
-                "status": "Sent",
-                "error_msg": "",
-                "attachments": json.dumps(attachments),
-                "email_type": "invoice"
-            })
-        except Exception as e:
-            with EMAIL_LOCK:
-                EMAIL_STATE["failed"] += 1
-                EMAIL_STATE["logs"].append(f"Failed {client_name}: {e}")
-            database.update_job_item(item_id, {"email_status": f"Failed: {str(e)[:40]}"})
-            
-            import json
-            try:
-                subj = subject
-                bdy = body
-            except:
-                subj = subject_template
-                bdy = body_template
-            database.add_email_log({
-                "client_name": client_name,
-                "recipient_email": to_email,
-                "cc_email": client_info.get("cc_email", ""),
-                "subject": subj,
-                "body": bdy,
-                "status": "Failed",
-                "error_msg": str(e),
-                "attachments": json.dumps(attachments),
-                "email_type": "invoice"
-            })
-
-    conn.close()
-    with EMAIL_LOCK:
-        EMAIL_STATE["running"] = False
-
+# --- BULK EMAIL QUEUE DISPATCH SERVICE ---
+@app.post("/api/email/queue/enqueue")
 @app.post("/api/email/send")
-def send_bulk_emails(payload: EmailSendRequest, background_tasks: BackgroundTasks):
-    global EMAIL_STATE
-    if EMAIL_STATE["running"]:
-        raise HTTPException(status_code=400, detail="Email sender is currently active.")
-    background_tasks.add_task(run_email_thread, payload.item_ids)
-    return {"status": "started"}
+def enqueue_bulk_emails(payload: EmailSendRequest):
+    """
+    Enqueues invoice items into the graceful background Email Dispatch Service.
+    Sends one email at a time with a configurable delay (throttle) to protect sender reputation.
+    """
+    if not payload.item_ids:
+        raise HTTPException(status_code=400, detail="No items selected for email dispatch.")
+    status = DISPATCHER.enqueue(payload.item_ids)
+    return {"status": "enqueued", "queue_status": status}
 
+@app.get("/api/email/queue/status")
 @app.get("/api/email/progress")
-def get_email_progress():
-    with EMAIL_LOCK:
-        return dict(EMAIL_STATE)
+def get_email_queue_status():
+    """
+    Returns real-time progress, telemetry, remaining count, and active queue items.
+    """
+    return DISPATCHER.get_status()
+
+@app.post("/api/email/queue/pause")
+def pause_email_queue():
+    """Pauses dispatching after the in-flight email finishes."""
+    return DISPATCHER.pause()
+
+@app.post("/api/email/queue/resume")
+def resume_email_queue():
+    """Resumes dispatching queued emails."""
+    return DISPATCHER.resume()
+
+@app.post("/api/email/queue/cancel")
+@app.post("/api/email/cancel")
+def cancel_email_queue():
+    """Cancels remaining queued emails and terminates active connection."""
+    return DISPATCHER.cancel()
+
+@app.post("/api/email/queue/retry-failed")
+def retry_failed_email_queue():
+    """Re-enqueues only failed items from the current batch."""
+    return DISPATCHER.retry_failed()
 
 @app.post("/api/email/test")
 def test_email_connection(payload: Dict[str, str]):

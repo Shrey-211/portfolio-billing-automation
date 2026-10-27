@@ -452,6 +452,25 @@ export default function Settings() {
               </Field>
             </div>
 
+            <div className="sm:col-span-3">
+              <Field label="Dispatch Queue Pacing Delay (seconds between emails)">
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  max="30"
+                  name="email_throttle_seconds"
+                  placeholder="2.0"
+                  value={settings.email_throttle_seconds ?? '2.0'}
+                  onChange={handleSettingChange}
+                  className={inputCls + ' font-mono'}
+                />
+                <p className="text-[9.5px] text-on-surface-variant mt-1.5">
+                  Paces outgoing emails evenly to protect sender reputation and prevent SMTP provider rate-limiting (Google Workspace, Office 365, Zoho). Recommended: <strong>1.5s - 3.0s</strong>. Set to 0 to disable delay.
+                </p>
+              </Field>
+            </div>
+
             {/* ── Test Connection ── */}
             <div className="sm:col-span-3 p-4 bg-surface-lowest/30 border border-outline-variant/20 rounded-lg space-y-3">
               <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider flex items-center gap-1.5">

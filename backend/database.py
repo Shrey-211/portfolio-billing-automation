@@ -242,6 +242,7 @@ def init_db(db_path=None):
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('email_smtp_tls', 'starttls')")
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('email_default_cc', '')")
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('email_qr_path', '')")
+        cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('email_throttle_seconds', '2.0')")
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_subject_template', 'Payment Confirmation - {ClientName} ({InvoiceNumber})')")
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_body_template', 'Dear {ClientName},\n\nThank you for your payment of INR {TotalAmount:,.2f} against Invoice {InvoiceNumber}.\n\nYour payment has been received and recorded. {PaymentStatusDetails}\n\nPlease find the attached confirmation for your records.\n\nBest Regards,\nAntigravity Wealth Management')")
 
