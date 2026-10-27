@@ -1,5 +1,9 @@
 import os
 import sys
+import re
+import difflib
+import ast
+import operator
 import openpyxl
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image, KeepTogether
@@ -196,6 +200,143 @@ def calculate_gst(fee_amount, state, gst_rates):
         "is_maharashtra": is_maharashtra
     }
 
+def clean_numeric_str(val):
+    """
+    Safely converts strings with commas, currency symbols, and whitespace to float.
+    """
+    if val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    val_str = str(val).replace("₹", "").replace("$", "").replace(",", "").strip()
+    try:
+        return float(val_str)
+    except (ValueError, TypeError):
+        return 0.0
+
+SAFE_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
+def safe_eval_math(node, variables):
+    """
+    Safely evaluates basic arithmetic expressions without eval().
+    """
+    if isinstance(node, ast.Constant):
+        return float(node.value)
+    elif isinstance(node, ast.Name):
+        lower_id = node.id.lower()
+        for k, v in variables.items():
+            if k.lower() == lower_id:
+                return float(v)
+        raise ValueError(f"Unknown variable in formula: {node.id}")
+    elif isinstance(node, ast.BinOp):
+        op_type = type(node.op)
+        if op_type in SAFE_OPERATORS:
+            left = safe_eval_math(node.left, variables)
+            right = safe_eval_math(node.right, variables)
+            return SAFE_OPERATORS[op_type](left, right)
+        raise ValueError(f"Unsupported operator in formula: {op_type}")
+    elif isinstance(node, ast.UnaryOp):
+        op_type = type(node.op)
+        if op_type in SAFE_OPERATORS:
+            operand = safe_eval_math(node.operand, variables)
+            return SAFE_OPERATORS[op_type](operand)
+        raise ValueError(f"Unsupported unary operator: {op_type}")
+    else:
+        raise ValueError(f"Unsupported formula element: {type(node)}")
+
+def calculate_formula_fee(formula_template="Value * Rate / 4", valuation=0.0, rate=0.0):
+    """
+    Safely calculates the fee using the configurable formula (e.g. 'Value * Rate / 4').
+    Handles both whole percentages (0.25) and fractions (0.0025).
+    """
+    clean_formula = formula_template.replace("=", "").strip() if formula_template else "Value * Rate / 4"
+    if not clean_formula:
+        clean_formula = "Value * Rate / 4"
+        
+    val_num = clean_numeric_str(valuation)
+    rate_num = clean_numeric_str(rate)
+    
+    variables = {
+        "Value": val_num,
+        "Rate": rate_num,
+        "valuation": val_num,
+        "rate": rate_num
+    }
+    try:
+        parsed = ast.parse(clean_formula, mode='eval')
+        result = safe_eval_math(parsed.body, variables)
+        return max(0.0, float(result))
+    except Exception as e:
+        print(f"Formula evaluation error: {e}. Falling back to Value * Rate / 4.")
+        return max(0.0, val_num * rate_num / 4.0)
+
+def find_invoice_sheet_name(sheetnames):
+    """
+    Dynamically finds an invoice sheet name in a list of sheets.
+    """
+    for name in ["invoice", "tax invoice", "tax_invoice", "billing invoice", "bill"]:
+        for s in sheetnames:
+            if s.strip().lower() == name:
+                return s
+    for s in sheetnames:
+        if "invoice" in s.strip().lower():
+            return s
+    return None
+
+def find_individual_portfolio_file(base_folder, client_name):
+    """
+    Implements notes.md requirement:
+    Searches base_folder and immediate subfolders (e.g. 'portfolios', 'clients', 'individual')
+    for a portfolio report file matching the client name (.pdf, .xlsx, .xlsm).
+    """
+    if not base_folder or not os.path.exists(base_folder) or not client_name:
+        return None
+        
+    clean_client = re.sub(r'[^a-zA-Z0-9]', '', str(client_name)).lower()
+    if not clean_client:
+        return None
+        
+    candidate_folders = [base_folder]
+    for sub in ["portfolios", "portfolio", "clients", "individual", "reports", "holdings"]:
+        p = os.path.join(base_folder, sub)
+        if os.path.isdir(p):
+            candidate_folders.append(p)
+            
+    # Also check child directories of base_folder (one level deep)
+    try:
+        for entry in os.scandir(base_folder):
+            if entry.is_dir() and entry.path not in candidate_folders and not entry.name.startswith(('.', '$', 'pdf', 'processed')):
+                candidate_folders.append(entry.path)
+    except Exception:
+        pass
+        
+    best_file = None
+    for folder in candidate_folders:
+        try:
+            for fname in os.listdir(folder):
+                if fname.startswith(('~$', '.')):
+                    continue
+                lower_f = fname.lower()
+                if lower_f.endswith(('.pdf', '.xlsx', '.xlsm')):
+                    base_no_ext = os.path.splitext(fname)[0]
+                    clean_f = re.sub(r'[^a-zA-Z0-9]', '', base_no_ext).lower()
+                    if clean_client in clean_f or clean_f in clean_client:
+                        return os.path.join(folder, fname)
+                    ratio = difflib.SequenceMatcher(None, clean_client, clean_f).ratio()
+                    if ratio > 0.8:
+                        best_file = os.path.join(folder, fname)
+        except Exception:
+            continue
+            
+    return best_file
+
 def convert_excel_to_pdf_fallback(excel_path, pdf_path, sheet_name=None):
     """
     Fallback method to generate a clean tabular report PDF from the Excel file
@@ -361,7 +502,7 @@ def convert_excel_to_pdf_fallback(excel_path, pdf_path, sheet_name=None):
 def convert_excel_to_pdf(excel_path, pdf_path, sheet_name=None, excel_app=None):
     """
     Uses win32com to open the excel file and export to PDF.
-    Must be run in main thread or call pythoncom.CoInitialize() first if inside QThread.
+    Supports reusing an existing Excel instance via excel_app for batch performance.
     Falls back to ReportLab layout generation if Excel is unavailable.
     """
     if not EXCEL_AVAILABLE:
@@ -371,6 +512,7 @@ def convert_excel_to_pdf(excel_path, pdf_path, sheet_name=None, excel_app=None):
     co_initialized = False
     excel = excel_app
     wb = None
+    should_quit = False
     try:
         if not excel:
             pythoncom.CoInitialize()
@@ -379,6 +521,7 @@ def convert_excel_to_pdf(excel_path, pdf_path, sheet_name=None, excel_app=None):
             excel.Visible = False
             excel.DisplayAlerts = False
             excel.AskToUpdateLinks = False
+            should_quit = True
         
         abs_excel = os.path.abspath(excel_path)
         abs_pdf = os.path.abspath(pdf_path)
@@ -410,16 +553,18 @@ def convert_excel_to_pdf(excel_path, pdf_path, sheet_name=None, excel_app=None):
         if wb:
             try:
                 wb.Close(False)
-            except:
+            except Exception:
                 pass
-        # Only quit Excel and uninitialize COM if we spawned the Excel instance locally here
-        if not excel_app and excel:
+        if excel and should_quit:
             try:
                 excel.Quit()
-            except:
+            except Exception:
                 pass
         if co_initialized:
-            pythoncom.CoUninitialize()
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
 def generate_invoice_pdf(pdf_path, invoice_details, company_details):
     """
@@ -683,10 +828,12 @@ def generate_invoice_pdf(pdf_path, invoice_details, company_details):
         normal_text
     )
     
+    sign_name = company_details.get('authorized_signatory') or 'Authorized Signatory'
+    sign_title = company_details.get('authorized_signatory_title') or 'Authorized Signatory'
     sign_p = Paragraph(
         f"For <b>{company_details.get('company_name', 'Company Name')}</b><br/><br/><br/><br/>"
-        f"<b>{company_details.get('authorized_signatory', 'Nlesh Bajaj')}</b><br/>"
-        f"{company_details.get('authorized_signatory_title', 'Authorized Signatory')}",
+        f"<b>{sign_name}</b><br/>"
+        f"{sign_title}",
         ParagraphStyle('Sign', parent=normal_text, alignment=2) # Right align
     )
     
@@ -714,7 +861,12 @@ def generate_invoice_pdf(pdf_path, invoice_details, company_details):
     
     # disputes disclaimer
     story.append(Spacer(1, 15))
-    story.append(Paragraph("<font size='7' color='#718096'>All disputes restricted to Pune Jurisdiction</font>", normal_text))
+    jurisdiction = company_details.get('dispute_jurisdiction', 'Mumbai Jurisdiction')
+    if not jurisdiction.lower().startswith("all disputes"):
+        jurisdiction_text = f"All disputes restricted to {jurisdiction}"
+    else:
+        jurisdiction_text = jurisdiction
+    story.append(Paragraph(f"<font size='7' color='#718096'>{jurisdiction_text}</font>", normal_text))
     
     # Build Document
     doc.build(story)
@@ -913,6 +1065,7 @@ def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path, excel_app=N
     co_initialized = False
     excel = excel_app
     wb = None
+    should_quit = False
     try:
         if not excel:
             pythoncom.CoInitialize()
@@ -921,6 +1074,7 @@ def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path, excel_app=N
             excel.Visible = False
             excel.DisplayAlerts = False
             excel.AskToUpdateLinks = False
+            should_quit = True
         
         abs_excel = os.path.abspath(excel_path)
         abs_pdf = os.path.abspath(pdf_path)
@@ -928,8 +1082,19 @@ def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path, excel_app=N
         os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
         wb = excel.Workbooks.Open(abs_excel, UpdateLinks=0, ReadOnly=False)
         
-        ws = wb.Sheets("Invoice")
-        ws.Range("B13").Value = client_key
+        inv_sheet_name = find_invoice_sheet_name([s.Name for s in wb.Sheets])
+        if not inv_sheet_name:
+            if "Invoice" in [s.Name for s in wb.Sheets]:
+                inv_sheet_name = "Invoice"
+            else:
+                inv_sheet_name = wb.Sheets(1).Name
+                
+        ws = wb.Sheets(inv_sheet_name)
+        
+        try:
+            ws.Range("B13").Value = client_key
+        except Exception:
+            pass
         
         if sheet_type == "example_2" and invoice_qr_path and os.path.exists(invoice_qr_path):
             try:
@@ -998,12 +1163,12 @@ def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path, excel_app=N
         if wb:
             try:
                 wb.Close(False)
-            except:
+            except Exception:
                 pass
-        if not excel_app and excel:
+        if excel and should_quit:
             try:
                 excel.Quit()
-            except:
+            except Exception:
                 pass
         if co_initialized:
             try:
@@ -1073,10 +1238,7 @@ def parse_single_excel_sheet(excel_path):
             invoice_no = str(ws_master.cell(row=r, column=col_invoice).value or "").strip()
             
             rate_val = ws_master.cell(row=r, column=col_rate).value
-            try:
-                rate = float(rate_val) if rate_val is not None else 0.0
-            except (ValueError, TypeError):
-                rate = 0.0
+            rate = clean_numeric_str(rate_val)
                 
             address = str(ws_master.cell(row=r, column=col_address).value or "").strip()
             state = str(ws_master.cell(row=r, column=col_state).value or "").strip()
@@ -1085,41 +1247,12 @@ def parse_single_excel_sheet(excel_path):
             val_start = ws_master.cell(row=r, column=col_start).value
             val_end = ws_master.cell(row=r, column=col_end).value
             
-            try:
-                valuation_val = ws_master.cell(row=r, column=col_valuation).value
-                valuation = float(valuation_val) if valuation_val is not None else 0.0
-            except (ValueError, TypeError):
-                valuation = 0.0
-                
-            try:
-                taxable_val = ws_master.cell(row=r, column=col_taxable).value
-                taxable_amount = float(taxable_val) if taxable_val is not None else 0.0
-            except (ValueError, TypeError):
-                taxable_amount = 0.0
-                
-            try:
-                cgst_val = ws_master.cell(row=r, column=col_cgst).value
-                cgst = float(cgst_val) if cgst_val is not None else 0.0
-            except (ValueError, TypeError):
-                cgst = 0.0
-                
-            try:
-                sgst_val = ws_master.cell(row=r, column=col_sgst).value
-                sgst = float(sgst_val) if sgst_val is not None else 0.0
-            except (ValueError, TypeError):
-                sgst = 0.0
-                
-            try:
-                igst_val = ws_master.cell(row=r, column=col_igst).value
-                igst = float(igst_val) if igst_val is not None else 0.0
-            except (ValueError, TypeError):
-                igst = 0.0
-                
-            try:
-                total_val = ws_master.cell(row=r, column=col_total).value
-                total_amount = float(total_val) if total_val is not None else 0.0
-            except (ValueError, TypeError):
-                total_amount = 0.0
+            valuation = clean_numeric_str(ws_master.cell(row=r, column=col_valuation).value)
+            taxable_amount = clean_numeric_str(ws_master.cell(row=r, column=col_taxable).value)
+            cgst = clean_numeric_str(ws_master.cell(row=r, column=col_cgst).value)
+            sgst = clean_numeric_str(ws_master.cell(row=r, column=col_sgst).value)
+            igst = clean_numeric_str(ws_master.cell(row=r, column=col_igst).value)
+            total_amount = clean_numeric_str(ws_master.cell(row=r, column=col_total).value)
                 
             if "#value" in state.lower() or not state:
                 if igst > 0:

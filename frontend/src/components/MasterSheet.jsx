@@ -262,22 +262,17 @@ export default function MasterSheet({ folderPath }) {
 
 
   const handleExportLedger = async () => {
-    if (!folderPath) {
-      alert("Please select a workspace or folder first on the Dashboard tab.");
-      return;
-    }
-    
     setExporting(true);
     try {
       const res = await fetch(`${API_BASE}/api/invoices/export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder_path: folderPath })
+        body: JSON.stringify({ folder_path: folderPath || '' })
       });
 
       if (res.ok) {
         const data = await res.json();
-        showFeedback(`Ledger exported successfully to ${data.file_path.split('\\').pop()}`);
+        showFeedback(`Ledger exported successfully to ${data.file_path}`);
         
         // Try to open folder or file automatically
         await fetch(`${API_BASE}/api/pdf/open`, {
