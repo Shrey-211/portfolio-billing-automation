@@ -18,21 +18,40 @@ import {
   FileText,
   Mail
 } from 'lucide-react';
+import InvoiceEditModal from './InvoiceEditModal';
+import EmailDraftModal from './EmailDraftModal';
+import PaymentRecordModal from './PaymentRecordModal';
+import PdfViewerModal from './PdfViewerModal';
+
 
 export default function MasterSheet({ folderPath }) {
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all'); // 'all', 'paid', 'unpaid'
-  const [editPaymentId, setEditPaymentId] = useState(null);
-  const [customDate, setCustomDate] = useState('');
+  const [isPaymentOpen, setIsPaymentOpen] = useState(false);
+  const [paymentInvoice, setPaymentInvoice] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState({ text: '', type: '' });
+  const [previewPdf, setPreviewPdf] = useState({ isOpen: false, path: '', title: '' });
 
   // Inline edit state
   const [editingCell, setEditingCell] = useState(null); // { itemId, field }
   const [editCellValue, setEditCellValue] = useState('');
   const [cellLoading, setCellLoading] = useState(null); // itemId
+
+  // Edit modal and Email draft modal state
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editInvoice, setEditInvoice] = useState(null);
+  const [draftOpen, setDraftOpen] = useState(false);
+  const [draftEndpoint, setDraftEndpoint] = useState('');
+  const [draftPayload, setDraftPayload] = useState({});
+
+  const handleStartEditInvoice = (invoice) => {
+    setEditInvoice(invoice);
+    setIsEditOpen(true);
+  };
+
 
   // Sorting and ID range filtering states
   const [minIdFilter, setMinIdFilter] = useState('');
@@ -158,22 +177,16 @@ export default function MasterSheet({ folderPath }) {
     }
   };
 
-  const handleOpenPDF = async (pdfPath) => {
-    if (!pdfPath) return;
-    try {
-      const res = await fetch(`${API_BASE}/api/pdf/open`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: pdfPath })
-      });
-      if (!res.ok) {
-        const errTxt = await res.text();
-        showFeedback("Failed to open PDF: " + errTxt, "error");
-      }
-    } catch (err) {
-      console.error("Error opening PDF:", err);
-      showFeedback("Error opening PDF: " + err.message, "error");
+  const handleOpenPDF = (pdfPath, title = "Document Preview") => {
+    if (!pdfPath) {
+      showFeedback("PDF document path is missing or not yet generated.", "warning");
+      return;
     }
+    setPreviewPdf({
+      isOpen: true,
+      path: pdfPath,
+      title: title || "Document Preview"
+    });
   };
 
   const showFeedback = (text, type = 'success') => {
@@ -183,35 +196,24 @@ export default function MasterSheet({ folderPath }) {
     }, 4000);
   };
 
-  const handleMarkPaid = async (id, useDate = null) => {
-    const pDate = useDate || new Date().toISOString().split('T')[0];
-    try {
-      const res = await fetch(`${API_BASE}/api/invoices/${id}/payment`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          is_paid: 1,
-          payment_date: pDate
-        })
-      });
-
-      if (res.ok) {
-        setInvoices(prev => prev.map(inv => {
-          if (inv.id === id) {
-            return { ...inv, is_paid: 1, payment_date: pDate };
-          }
-          return inv;
-        }));
-        setEditPaymentId(null);
-        setCustomDate('');
-        showFeedback("Invoice payment successfully recorded.");
-      } else {
-        showFeedback("Failed to update payment status.", "error");
+  const handlePaymentRecorded = (id, pDate, amtPaid, credApplied = 0) => {
+    setInvoices(prev => prev.map(inv => {
+      if (inv.id === id) {
+        const effective = amtPaid + credApplied;
+        const is_paid_status = effective === 0 ? 0 : (effective >= inv.total_amount ? 1 : 2);
+        return { ...inv, is_paid: is_paid_status, payment_date: pDate, amount_paid: amtPaid, credit_applied: credApplied };
       }
-    } catch (err) {
-      console.error("Payment update failed:", err);
-      showFeedback("Error reaching server.", "error");
-    }
+      return inv;
+    }));
+    showFeedback("Invoice payment successfully recorded.");
+
+    // Open payment confirmation email draft modal
+    setDraftEndpoint(`/api/email/payment-template/${id}`);
+    setDraftPayload({
+      item_id: id,
+      email_type: 'payment_receipt'
+    });
+    setDraftOpen(true);
   };
 
   const handleMarkUnpaid = async (id) => {
@@ -222,14 +224,16 @@ export default function MasterSheet({ folderPath }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           is_paid: 0,
-          payment_date: null
+          payment_date: null,
+          amount_paid: 0.0,
+          credit_applied: 0.0
         })
       });
 
       if (res.ok) {
         setInvoices(prev => prev.map(inv => {
           if (inv.id === id) {
-            return { ...inv, is_paid: 0, payment_date: null };
+            return { ...inv, is_paid: 0, payment_date: null, amount_paid: 0.0, credit_applied: 0.0 };
           }
           return inv;
         }));
@@ -243,44 +247,28 @@ export default function MasterSheet({ folderPath }) {
     }
   };
 
-  const handleSendSingleEmail = async (itemId) => {
-    const confirmSend = window.confirm("Send email for this invoice?");
-    if (!confirmSend) return;
-    try {
-      const res = await fetch(`${API_BASE}/api/email/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ item_ids: [itemId] })
-      });
-      if (res.ok) {
-        showFeedback("Email dispatch triggered successfully.");
-        fetchInvoices();
-      } else {
-        showFeedback("Failed to trigger email: " + await res.text(), "error");
-      }
-    } catch (err) {
-      console.error("Error sending email:", err);
-      showFeedback("Error sending email: " + err.message, "error");
-    }
+  const handleSendSingleEmail = (itemId) => {
+    setDraftEndpoint(`/api/email/invoice-template/${itemId}`);
+    setDraftPayload({
+      item_id: itemId,
+      email_type: 'invoice'
+    });
+    setDraftOpen(true);
   };
 
+
   const handleExportLedger = async () => {
-    if (!folderPath) {
-      alert("Please select a workspace or folder first on the Dashboard tab.");
-      return;
-    }
-    
     setExporting(true);
     try {
       const res = await fetch(`${API_BASE}/api/invoices/export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder_path: folderPath })
+        body: JSON.stringify({ folder_path: folderPath || '' })
       });
 
       if (res.ok) {
         const data = await res.json();
-        showFeedback(`Ledger exported successfully to ${data.file_path.split('\\').pop()}`);
+        showFeedback(`Ledger exported successfully to ${data.file_path}`);
         
         // Try to open folder or file automatically
         await fetch(`${API_BASE}/api/pdf/open`, {
@@ -307,9 +295,9 @@ export default function MasterSheet({ folderPath }) {
     
     let matchStatus = true;
     if (statusFilter === 'paid') {
-      matchStatus = inv.is_paid === 1;
+      matchStatus = inv.is_paid === 1 || inv.is_paid === 2;
     } else if (statusFilter === 'unpaid') {
-      matchStatus = inv.is_paid !== 1;
+      matchStatus = inv.is_paid !== 1 && inv.is_paid !== 2;
     }
     
     let matchIdRange = true;
@@ -512,7 +500,14 @@ export default function MasterSheet({ folderPath }) {
                         ) : (
                           <div className="flex items-center gap-1.5 justify-between">
                             <div>
-                              <span>{inv.client_name}</span>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span>{inv.client_name}</span>
+                                {inv.quarter && (
+                                  <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[8px] font-bold bg-indigo-500/15 text-indigo-400 border border-indigo-500/25">
+                                    {inv.quarter}
+                                  </span>
+                                )}
+                              </div>
                               <span className="block text-[9px] text-on-surface-variant font-mono mt-0.5" title={inv.filename}>
                                 {inv.filename ? inv.filename.split('\\').pop() : '-'}
                               </span>
@@ -538,15 +533,20 @@ export default function MasterSheet({ folderPath }) {
                           />
                         ) : (
                           <div className="flex items-center justify-between gap-1.5">
-                            <span>₹{inv.valuation.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                            <span>₹{Number(inv.valuation ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
                           </div>
                         )}
                       </td>
                       <td className="py-4 px-6 font-mono text-on-surface-variant">
-                        ₹{inv.fee_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        ₹{Number(inv.fee_amount ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
-                      <td className="py-4 px-6 font-mono font-bold text-on-surface">
-                        ₹{inv.total_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      <td className="py-4 px-6 font-mono text-on-surface">
+                        <div className="font-bold">₹{Number(inv.total_amount ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        {inv.credit_applied > 0 && (
+                          <div className="text-[10px] text-secondary font-medium mt-0.5">
+                            - ₹{Number(inv.credit_applied).toLocaleString('en-IN', { minimumFractionDigits: 2 })} Credit
+                          </div>
+                        )}
                       </td>
                       <td className="py-4 px-6 text-center">
                         {cellLoading === inv.id ? (
@@ -571,7 +571,7 @@ export default function MasterSheet({ folderPath }) {
                         {inv.status === 'Completed' && inv.invoice_pdf_path ? (
                           <div className="flex flex-col sm:flex-row items-center justify-center gap-2">
                             <button
-                              onClick={() => handleOpenPDF(inv.invoice_pdf_path)}
+                              onClick={() => handleOpenPDF(inv.invoice_pdf_path, `Tax Invoice: ${inv.client_name}`)}
                               className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-bold bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 hover:border-primary/35 transition-all cursor-pointer"
                               title="View Invoice PDF"
                             >
@@ -580,7 +580,7 @@ export default function MasterSheet({ folderPath }) {
                             </button>
                             {inv.portfolio_pdf_path && (
                               <button
-                                onClick={() => handleOpenPDF(inv.portfolio_pdf_path)}
+                                onClick={() => handleOpenPDF(inv.portfolio_pdf_path, `Portfolio Report: ${inv.client_name}`)}
                                 className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-bold bg-secondary/10 text-secondary border border-secondary/20 hover:bg-secondary/20 hover:border-secondary/35 transition-all cursor-pointer"
                                 title="View Portfolio PDF"
                               >
@@ -622,73 +622,62 @@ export default function MasterSheet({ folderPath }) {
                           <div className="space-y-1">
                             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-bold bg-secondary/15 text-secondary border border-secondary/25">
                               <CheckCircle className="h-3 w-3" />
-                              Received
+                              Received (Full)
                             </span>
-                            <span className="block text-[9px] text-on-surface-variant font-mono opacity-80">{inv.payment_date}</span>
+                            {inv.amount_paid > 0 && (
+                              <span className="block text-[9px] text-on-surface-variant font-mono">₹{Number(inv.amount_paid).toLocaleString('en-IN')}</span>
+                            )}
+                            {inv.credit_applied > 0 && (
+                              <span className="block text-[9px] text-secondary font-medium font-mono">Credit: ₹{Number(inv.credit_applied).toLocaleString('en-IN')}</span>
+                            )}
+                            <span className="block text-[8px] text-on-surface-variant font-mono opacity-60">{inv.payment_date}</span>
+                          </div>
+                        ) : inv.is_paid === 2 ? (
+                          <div className="space-y-1">
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/25">
+                              <Clock className="h-3 w-3 animate-pulse" />
+                              Received (Partial)
+                            </span>
+                            <span className="block text-[9px] text-on-surface-variant font-mono">₹{Number(inv.amount_paid).toLocaleString('en-IN')} / ₹{Number(inv.total_amount).toLocaleString('en-IN')}</span>
+                            {inv.credit_applied > 0 && (
+                              <span className="block text-[9px] text-secondary font-medium font-mono">Credit: ₹{Number(inv.credit_applied).toLocaleString('en-IN')}</span>
+                            )}
+                            <span className="block text-[8px] text-on-surface-variant font-mono opacity-60">{inv.payment_date}</span>
                           </div>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                            <Clock className="h-3 w-3" />
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-bold bg-surface-container-high text-on-surface-variant/75 border border-outline-variant/35">
+                            <Clock className="h-3 w-3 text-outline" />
                             Outstanding
                           </span>
                         )}
                       </td>
                       <td className="py-4 px-6 text-center">
-                        {inv.is_paid === 1 ? (
+                        <div className="inline-flex items-center gap-2">
                           <button
-                            onClick={() => handleMarkUnpaid(inv.id)}
-                            className="inline-flex items-center gap-1 text-[10px] text-error hover:text-error-container font-semibold border border-error/20 bg-surface-lowest hover:bg-error/5 px-2.5 py-1 rounded transition-colors cursor-pointer"
+                            onClick={() => {
+                              setPaymentInvoice(inv);
+                              setIsPaymentOpen(true);
+                            }}
+                            className="inline-flex items-center gap-1 text-[10px] text-secondary hover:text-secondary-fixed font-bold border border-secondary/20 bg-surface-lowest hover:bg-secondary/5 px-2.5 py-1 rounded transition-colors cursor-pointer"
                           >
-                            Reset Payment
+                            Record Payment
                           </button>
-                        ) : (
-                          <div className="inline-flex items-center gap-2">
-                            {editPaymentId === inv.id ? (
-                              <div className="flex items-center gap-1.5 bg-surface-lowest border border-outline-variant/30 rounded px-1.5 py-0.5">
-                                <input
-                                  type="date"
-                                  value={customDate}
-                                  onChange={(e) => setCustomDate(e.target.value)}
-                                  className="bg-transparent text-[10px] text-on-surface outline-none py-0.5 border-none font-mono"
-                                />
-                                <button
-                                  onClick={() => handleMarkPaid(inv.id, customDate)}
-                                  className="text-[10px] text-secondary hover:text-secondary-fixed font-bold px-1"
-                                >
-                                  Save
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setEditPaymentId(null);
-                                    setCustomDate('');
-                                  }}
-                                  className="text-[10px] text-on-surface-variant hover:text-on-surface font-bold px-1"
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            ) : (
-                              <>
-                                <button
-                                  onClick={() => handleMarkPaid(inv.id)}
-                                  className="inline-flex items-center gap-1 text-[10px] text-secondary hover:text-secondary-fixed font-bold border border-secondary/20 bg-surface-lowest hover:bg-secondary/5 px-2.5 py-1 rounded transition-colors cursor-pointer"
-                                >
-                                  Mark Paid
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setEditPaymentId(inv.id);
-                                    setCustomDate(new Date().toISOString().split('T')[0]);
-                                  }}
-                                  className="p-1 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high rounded transition-colors"
-                                  title="Record custom payment date"
-                                >
-                                  <Calendar className="h-3.5 w-3.5" />
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        )}
+                          {(inv.is_paid === 1 || inv.is_paid === 2) && (
+                            <button
+                              onClick={() => handleMarkUnpaid(inv.id)}
+                              className="inline-flex items-center gap-1 text-[10px] text-error hover:text-error-container font-semibold border border-error/20 bg-surface-lowest hover:bg-error/5 px-2.5 py-1 rounded transition-colors cursor-pointer"
+                            >
+                              Reset
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleStartEditInvoice(inv)}
+                            className="p-1.5 hover:bg-surface-container-high rounded text-on-surface-variant hover:text-primary transition-colors cursor-pointer"
+                            title="Edit Invoice Details"
+                          >
+                            <Edit3 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -706,6 +695,46 @@ export default function MasterSheet({ folderPath }) {
           </div>
         )}
       </div>
+
+      {/* Popups and Modals */}
+      <InvoiceEditModal
+        isOpen={isEditOpen}
+        onClose={() => {
+          setIsEditOpen(false);
+          setEditInvoice(null);
+        }}
+        invoice={editInvoice}
+        onSaved={fetchInvoices}
+      />
+
+      <EmailDraftModal
+        isOpen={draftOpen}
+        onClose={() => {
+          setDraftOpen(false);
+          setDraftEndpoint('');
+        }}
+        templateEndpoint={draftEndpoint}
+        defaultPayload={draftPayload}
+        onSent={fetchInvoices}
+      />
+
+      <PaymentRecordModal
+        isOpen={isPaymentOpen}
+        onClose={() => {
+          setIsPaymentOpen(false);
+          setPaymentInvoice(null);
+        }}
+        invoice={paymentInvoice}
+        onSaved={handlePaymentRecorded}
+      />
+
+      <PdfViewerModal
+        isOpen={previewPdf.isOpen}
+        onClose={() => setPreviewPdf({ isOpen: false, path: '', title: '' })}
+        pdfPath={previewPdf.path}
+        title={previewPdf.title}
+      />
     </div>
   );
 }
+

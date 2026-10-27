@@ -16,9 +16,13 @@ import {
   Moon,
   Table,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Mail
 } from 'lucide-react';
 import MasterSheet from './components/MasterSheet';
+import ClientDatabase from './components/ClientDatabase';
+import EmailHub from './components/EmailHub';
+
 
 
 function App() {
@@ -27,6 +31,7 @@ function App() {
   const [queue, setQueue] = useState([]);
   const [batchId, setBatchId] = useState(null);
   const [importMode, setImportMode] = useState('folder'); // 'folder' or 'sheet'
+  const [sheetType, setSheetType] = useState('example_1'); // 'example_1' or 'example_2'
   const [isCollapsed, setIsCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === 'true');
 
   const toggleSidebar = () => {
@@ -56,15 +61,17 @@ function App() {
 
   const toggleTheme = () => setIsDark(prev => !prev);
 
-  // Tab config
   const navItems = [
     { id: 'home', label: 'Dashboard', icon: Layers },
     { id: 'workbench', label: 'File Queue', icon: FileSpreadsheet, badge: queue.length > 0 ? queue.length : null },
     { id: 'processing', label: 'Billing Engine', icon: Cpu },
     { id: 'results', label: 'Results & Delivery', icon: Send },
     { id: 'master', label: 'Master Sheet', icon: Table },
+    { id: 'client-db', label: 'Client Registry', icon: User },
+    { id: 'email-hub', label: 'Email Logs', icon: Mail },
     { id: 'settings', label: 'Settings', icon: SettingsIcon }
   ];
+
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-on-surface font-sans relative selection:bg-primary selection:text-on-primary">
@@ -83,8 +90,8 @@ function App() {
               </div>
               {!isCollapsed && (
                 <div className="animate-fade-in">
-                  <span className="text-lg font-extrabold text-primary tracking-wide block">AlphaBilling</span>
-                  <span className="block text-[10px] text-on-surface-variant uppercase tracking-widest opacity-70">Elite Portfolio Management</span>
+                  <span className="text-lg font-extrabold text-primary tracking-wide block">Cedrus Consultants</span>
+                  <span className="block text-[10px] text-on-surface-variant uppercase tracking-widest opacity-70">Portfolio Management</span>
                 </div>
               )}
             </div>
@@ -145,8 +152,8 @@ function App() {
             </div>
             {!isCollapsed && (
               <div className="min-w-0 flex-1 animate-fade-in">
-                <p className="text-xs font-semibold text-on-surface truncate">Advisor Console</p>
-                <p className="text-[9px] text-on-surface-variant truncate font-mono uppercase tracking-wider opacity-60">Antigravity Wealth</p>
+                <p className="text-xs font-semibold text-on-surface truncate">Admin Console</p>
+                <p className="text-[9px] text-on-surface-variant truncate font-mono uppercase tracking-wider opacity-60">Cedrus Consultants Pvt Ltd</p>
               </div>
             )}
           </div>
@@ -180,6 +187,8 @@ function App() {
               folderPath={folderPath}
               queue={queue}
               setImportMode={setImportMode}
+              sheetType={sheetType}
+              setSheetType={setSheetType}
             />
           )}
           
@@ -190,6 +199,7 @@ function App() {
               folderPath={folderPath}
               setTab={setActiveTab}
               importMode={importMode}
+              sheetType={sheetType}
             />
           )}
           
@@ -209,6 +219,14 @@ function App() {
 
           {activeTab === 'master' && (
             <MasterSheet folderPath={folderPath} />
+          )}
+
+          {activeTab === 'client-db' && (
+            <ClientDatabase />
+          )}
+
+          {activeTab === 'email-hub' && (
+            <EmailHub />
           )}
           
           {activeTab === 'settings' && (

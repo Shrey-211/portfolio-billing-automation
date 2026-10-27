@@ -1,6 +1,10 @@
 import { useEffect, useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import API_BASE from '../api';
+import EmailDraftModal from './EmailDraftModal';
+import PdfViewerModal from './PdfViewerModal';
 import { 
+
   CheckCircle, 
   XCircle, 
   Mail, 
@@ -14,7 +18,11 @@ import {
   Edit3,
   Database,
   Building,
-  MapPin
+  MapPin,
+  FolderOpen,
+  Pause,
+  Play,
+  RotateCcw
 } from 'lucide-react';
 
 const INDIAN_STATES = [
@@ -32,6 +40,13 @@ export default function Results({ batchId, setBatchId }) {
   const [items, setItems] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [previewPdf, setPreviewPdf] = useState({ isOpen: false, path: '', title: '' });
+
+  // Email draft modal state
+  const [draftOpen, setDraftOpen] = useState(false);
+  const [draftEndpoint, setDraftEndpoint] = useState('');
+  const [draftPayload, setDraftPayload] = useState({});
+
   
   // Edit Invoice Side Drawer State
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -47,7 +62,16 @@ export default function Results({ batchId, setBatchId }) {
     gstin: '',
     valuation: 0.0,
     is_regular: true,
-    custom_message: ''
+    custom_message: '',
+    invoice_number: '',
+    portfolio_pdf_path: '',
+    invoice_pdf_path: '',
+    override_calculations: false,
+    fee_amount: 0.0,
+    cgst: 0.0,
+    sgst: 0.0,
+    igst: 0.0,
+    total_amount: 0.0
   });
 
   // Inline edit state
@@ -57,10 +81,31 @@ export default function Results({ batchId, setBatchId }) {
 
   const handleInputChange = (e) => {
     const { name, value, type, checked } = e.target;
+    const numericFields = ['valuation', 'fee_amount', 'cgst', 'sgst', 'igst', 'total_amount'];
     setFormState(prev => ({
       ...prev,
-      [name]: type === 'checkbox' ? checked : (name === 'valuation' ? parseFloat(value) || 0.0 : value)
+      [name]: type === 'checkbox' ? checked : (numericFields.includes(name) ? (parseFloat(value) || 0.0) : value)
     }));
+  };
+
+  const handleBrowseFile = async (target) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/files/select-pdf`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.file_path) {
+          setFormState(prev => ({
+            ...prev,
+            [target === 'portfolio' ? 'portfolio_pdf_path' : 'invoice_pdf_path']: data.file_path
+          }));
+        }
+      } else {
+        alert("Failed to open file picker: " + await res.text());
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error picking file: " + err.message);
+    }
   };
 
   const handleStartEditCell = (itemId, field, initialValue) => {
@@ -167,7 +212,16 @@ export default function Results({ batchId, setBatchId }) {
       gstin: '',
       valuation: item.valuation || 0.0,
       is_regular: item.status !== 'Skipped (Not Billable)',
-      custom_message: item.custom_message || ''
+      custom_message: item.custom_message || '',
+      invoice_number: item.invoice_number || '',
+      portfolio_pdf_path: item.portfolio_pdf_path || '',
+      invoice_pdf_path: item.invoice_pdf_path || '',
+      override_calculations: false,
+      fee_amount: item.fee_amount || 0.0,
+      cgst: item.cgst || 0.0,
+      sgst: item.sgst || 0.0,
+      igst: item.igst || 0.0,
+      total_amount: item.total_amount || 0.0
     });
     try {
       const res = await fetch(`${API_BASE}/api/clients/${encodeURIComponent(item.client_name)}`);
@@ -294,19 +348,16 @@ export default function Results({ batchId, setBatchId }) {
     }
   };
 
-  const handleOpenPdf = async (path) => {
-    try {
-      const res = await fetch(`${API_BASE}/api/pdf/open`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path })
-      });
-      if (!res.ok) {
-        alert("Failed to launch PDF viewer on server: " + await res.text());
-      }
-    } catch (err) {
-      console.error("Failed to open PDF file", err);
+  const handleOpenPdf = (path, title = "Document Preview") => {
+    if (!path) {
+      alert("PDF file path is missing or not yet generated.");
+      return;
     }
+    setPreviewPdf({
+      isOpen: true,
+      path,
+      title: title || "Document Preview"
+    });
   };
 
   const handleOpenFolder = async () => {
@@ -364,26 +415,16 @@ export default function Results({ batchId, setBatchId }) {
     }
   };
 
-  // Send email for a single invoice row
-  const handleSendSingleEmail = async (itemId) => {
-    const confirmSend = window.confirm(`Send email for this invoice?`);
-    if (!confirmSend) return;
-    try {
-      const res = await fetch(`${API_BASE}/api/email/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ item_ids: [itemId] })
-      });
-      if (res.ok) {
-        setEmailProgressOpen(true);
-        startPollingEmailProgress();
-      } else {
-        alert("Email trigger failed: " + await res.text());
-      }
-    } catch (err) {
-      console.error("Single email delivery failed", err);
-    }
+  // Send email for a single invoice row (opens Draft Modal)
+  const handleSendSingleEmail = (itemId) => {
+    setDraftEndpoint(`/api/email/invoice-template/${itemId}`);
+    setDraftPayload({
+      item_id: itemId,
+      email_type: 'invoice'
+    });
+    setDraftOpen(true);
   };
+
 
   const startPollingEmailProgress = () => {
     if (emailPollInterval.current) clearInterval(emailPollInterval.current);
@@ -420,6 +461,43 @@ export default function Results({ batchId, setBatchId }) {
     if (emailPollInterval.current) {
       clearInterval(emailPollInterval.current);
       emailPollInterval.current = null;
+    }
+  };
+
+  const handlePauseEmailQueue = async () => {
+    try {
+      await fetch(`${API_BASE}/api/email/queue/pause`, { method: 'POST' });
+      pollEmailProgress();
+    } catch (e) {
+      console.error("Failed to pause queue:", e);
+    }
+  };
+
+  const handleResumeEmailQueue = async () => {
+    try {
+      await fetch(`${API_BASE}/api/email/queue/resume`, { method: 'POST' });
+      pollEmailProgress();
+    } catch (e) {
+      console.error("Failed to resume queue:", e);
+    }
+  };
+
+  const handleCancelEmailQueue = async () => {
+    if (!window.confirm("Cancel remaining queued emails? Ongoing email will finish.")) return;
+    try {
+      await fetch(`${API_BASE}/api/email/queue/cancel`, { method: 'POST' });
+      pollEmailProgress();
+    } catch (e) {
+      console.error("Failed to cancel queue:", e);
+    }
+  };
+
+  const handleRetryFailedEmails = async () => {
+    try {
+      await fetch(`${API_BASE}/api/email/queue/retry-failed`, { method: 'POST' });
+      startPollingEmailProgress();
+    } catch (e) {
+      console.error("Failed to retry failed emails:", e);
     }
   };
 
@@ -473,6 +551,11 @@ export default function Results({ batchId, setBatchId }) {
               <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-primary/15 text-primary border border-primary/25">
                 Created: {new Date(activeBatch.timestamp.replace(' ', 'T')).toLocaleString()}
               </span>
+              {activeBatch.quarter && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/15 text-indigo-400 border border-indigo-500/25">
+                  Quarter: {activeBatch.quarter}
+                </span>
+              )}
               <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-secondary/15 text-secondary border border-secondary/25">
                 Passed: {activeBatch.processed_files}
               </span>
@@ -544,10 +627,13 @@ export default function Results({ batchId, setBatchId }) {
                 {items.map((item) => {
                   const isSuccess = item.status === 'Completed';
                   const isSelected = selectedIds.includes(item.id);
-                  const cgst_sgst = item.cgst > 0 ? (item.cgst + item.sgst) : 0.0;
-                  const gstText = item.cgst > 0 
-                    ? `CGST+SGST (${item.cgst.toLocaleString('en-IN', {maximumFractionDigits:1})})` 
-                    : `IGST (${item.igst.toLocaleString('en-IN', {maximumFractionDigits:1})})`;
+                  const cgst_val = Number(item.cgst || 0);
+                  const sgst_val = Number(item.sgst || 0);
+                  const igst_val = Number(item.igst || 0);
+                  const cgst_sgst = cgst_val > 0 ? (cgst_val + sgst_val) : 0.0;
+                  const gstText = cgst_val > 0 
+                    ? `CGST+SGST (${cgst_val.toLocaleString('en-IN', {maximumFractionDigits:1})})` 
+                    : `IGST (${igst_val.toLocaleString('en-IN', {maximumFractionDigits:1})})`;
                   return (
                     <tr key={item.id} className={`hover:bg-surface-container-highest/30 transition-colors ${!isSuccess ? 'opacity-50' : ''}`}>
                       <td className="py-4 px-6 whitespace-nowrap">
@@ -601,21 +687,21 @@ export default function Results({ batchId, setBatchId }) {
                           />
                         ) : (
                           <div className="flex items-center justify-between gap-1.5">
-                            <span>₹{item.valuation.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                            <span>₹{Number(item.valuation || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
                           </div>
                         )}
                       </td>
                       <td className="py-4 px-6 whitespace-nowrap text-on-surface font-mono">
-                        ₹{item.fee_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        ₹{Number(item.fee_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="py-4 px-6 whitespace-nowrap">
                         <span className="block font-mono text-on-surface font-semibold">
-                          ₹{(cgst_sgst > 0 ? cgst_sgst : item.igst).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          ₹{Number(cgst_sgst > 0 ? cgst_sgst : igst_val).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                         <span className="text-[9px] text-on-surface-variant font-medium">{gstText}</span>
                       </td>
                       <td className="py-4 px-6 whitespace-nowrap font-bold text-on-surface font-mono">
-                        ₹{item.total_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        ₹{Number(item.total_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="py-4 px-6 text-center">
                         {cellLoading === item.id ? (
@@ -644,7 +730,7 @@ export default function Results({ batchId, setBatchId }) {
                           <div className="flex gap-2.5">
                             {item.portfolio_pdf_path ? (
                               <button
-                                onClick={() => handleOpenPdf(item.portfolio_pdf_path)}
+                                onClick={() => handleOpenPdf(item.portfolio_pdf_path, `Portfolio Report: ${item.client_name}`)}
                                 className="text-primary hover:text-primary-container font-semibold flex items-center gap-0.5 cursor-pointer"
                                 title="Open Portfolio"
                               >
@@ -657,7 +743,7 @@ export default function Results({ batchId, setBatchId }) {
                             ) : null}
                             {item.invoice_pdf_path ? (
                               <button
-                                onClick={() => handleOpenPdf(item.invoice_pdf_path)}
+                                onClick={() => handleOpenPdf(item.invoice_pdf_path, `Tax Invoice: ${item.client_name}`)}
                                 className="text-primary hover:text-primary-container font-semibold flex items-center gap-0.5 cursor-pointer"
                                 title="Open Invoice"
                               >
@@ -722,88 +808,182 @@ export default function Results({ batchId, setBatchId }) {
         )}
       </div>
 
-      {/* Bulk Email progress dialog modal */}
-      {emailProgressOpen && (
-        <div className="fixed inset-0 z-50 overflow-hidden flex items-center justify-center p-4 animate-fade-in">
-          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      {/* Graceful Email Dispatch Queue Modal */}
+      {emailProgressOpen && createPortal(
+        <div className="fixed inset-0 z-[999] overflow-hidden flex items-center justify-center p-4 animate-fade-in text-left">
+          <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
           
           <div className="relative w-full max-w-2xl bg-[#10131a] glass-panel border border-[#232d3f]/60 rounded-xl shadow-2xl flex flex-col overflow-hidden max-h-[90vh]">
             {/* Header */}
             <div className="px-6 py-4 bg-surface-container/20 border-b border-[#232d3f]/60 flex items-center justify-between">
-              <h3 className="text-sm font-bold text-on-surface flex items-center gap-2 uppercase tracking-wider">
-                <Mail className="h-4.5 w-4.5 text-primary" />
-                Mailing Calculations Dispatcher
-              </h3>
-              {!emailProgress.running && (
-                <button 
-                  onClick={handleCloseEmailProgress}
-                  className="text-on-surface-variant hover:text-on-surface rounded-lg p-1 hover:bg-surface-container-low transition-colors cursor-pointer"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              )}
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-primary/10 border border-primary/20 text-primary">
+                  <Mail className="h-4.5 w-4.5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-on-surface flex items-center gap-2 uppercase tracking-wider">
+                    Email Dispatch Queue
+                  </h3>
+                  <p className="text-[10px] text-on-surface-variant font-medium">
+                    Graceful background dispatcher with connection pooling and rate pacing.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {emailProgress.running && (
+                  emailProgress.paused ? (
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                      PAUSED
+                    </span>
+                  ) : (
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/15 text-indigo-400 border border-indigo-500/30 animate-pulse flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+                      DISPATCHING ({emailProgress.throttle_seconds ?? 2.0}s PACING)
+                    </span>
+                  )
+                )}
+                {!emailProgress.running && (
+                  <button 
+                    onClick={handleCloseEmailProgress}
+                    className="text-on-surface-variant hover:text-on-surface rounded-lg p-1 hover:bg-surface-container-low transition-colors cursor-pointer"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Content Progress */}
             <div className="p-6 space-y-4">
-              <div className="flex justify-between items-center text-xs font-semibold">
-                <span className="text-on-surface">
-                  {emailProgress.running ? 'Dispatching reports...' : 'Delivery complete'}
-                </span>
-                <span className="font-mono text-on-surface-variant">
-                  {emailProgress.completed} / {emailProgress.total} sent
-                </span>
+              {/* Queue Metrics */}
+              <div className="grid grid-cols-4 gap-2.5 text-center">
+                <div className="p-2.5 bg-surface-lowest/60 border border-outline-variant/15 rounded-lg">
+                  <p className="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant">Enqueued</p>
+                  <p className="text-base font-extrabold text-on-surface font-mono mt-0.5">{emailProgress.total}</p>
+                </div>
+                <div className="p-2.5 bg-emerald-500/5 border border-emerald-500/20 rounded-lg">
+                  <p className="text-[9px] font-bold uppercase tracking-wider text-emerald-400">Delivered</p>
+                  <p className="text-base font-extrabold text-emerald-400 font-mono mt-0.5">{emailProgress.completed}</p>
+                </div>
+                <div className="p-2.5 bg-indigo-500/5 border border-indigo-500/20 rounded-lg">
+                  <p className="text-[9px] font-bold uppercase tracking-wider text-indigo-400">In Queue</p>
+                  <p className="text-base font-extrabold text-indigo-400 font-mono mt-0.5">
+                    {emailProgress.remaining ?? Math.max(0, emailProgress.total - emailProgress.completed - emailProgress.failed)}
+                  </p>
+                </div>
+                <div className="p-2.5 bg-rose-500/5 border border-rose-500/20 rounded-lg">
+                  <p className="text-[9px] font-bold uppercase tracking-wider text-rose-400">Failed</p>
+                  <p className="text-base font-extrabold text-rose-400 font-mono mt-0.5">{emailProgress.failed}</p>
+                </div>
               </div>
 
               {/* Progress bar */}
-              <div className="w-full bg-surface-lowest border border-[#232d3f]/40 rounded-full h-3.5 p-0.5">
-                <div 
-                  className={`h-2.5 rounded-full transition-all duration-300 ${
-                    emailProgress.running ? 'bg-indigo-600 animate-pulse' : 'bg-secondary'
-                  }`}
-                  style={{ width: `${emailProgress.total > 0 ? (emailProgress.completed / emailProgress.total) * 100 : 0}%` }}
-                />
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center text-[10.5px]">
+                  <span className="text-on-surface-variant font-medium">
+                    {emailProgress.running 
+                      ? (emailProgress.paused ? 'Queue paused by operator' : `Delivering with ${emailProgress.throttle_seconds ?? 2.0}s delay between emails...`)
+                      : (emailProgress.failed > 0 ? 'Batch completed with some delivery errors' : 'All emails dispatched successfully')
+                    }
+                  </span>
+                  <span className="font-mono text-on-surface font-bold">
+                    {emailProgress.total > 0 ? Math.round(((emailProgress.completed + emailProgress.failed) / emailProgress.total) * 100) : 0}%
+                  </span>
+                </div>
+                <div className="w-full bg-surface-lowest border border-[#232d3f]/40 rounded-full h-3 p-0.5">
+                  <div 
+                    className={`h-2 rounded-full transition-all duration-300 ${
+                      emailProgress.running 
+                        ? (emailProgress.paused ? 'bg-amber-500' : 'bg-indigo-600') 
+                        : (emailProgress.failed > 0 ? 'bg-amber-500' : 'bg-secondary')
+                    }`}
+                    style={{ width: `${emailProgress.total > 0 ? ((emailProgress.completed + emailProgress.failed) / emailProgress.total) * 100 : 0}%` }}
+                  />
+                </div>
               </div>
 
-              <div className="flex justify-between text-[11px] text-on-surface-variant font-bold border-b border-[#232d3f]/40 pb-3">
-                <span>Success: <span className="text-secondary">{emailProgress.completed - emailProgress.failed}</span></span>
-                <span>Failed: <span className="text-error">{emailProgress.failed}</span></span>
-              </div>
-
-              {/* Logs */}
+              {/* Real-time Dispatch Logs */}
               <div 
                 ref={emailLogsContainerRef}
-                className="bg-surface-lowest rounded-lg p-4 h-[250px] overflow-y-auto font-mono text-[10px] leading-relaxed space-y-1.5 border border-[#232d3f]/30 scrollbar-thin"
+                className="bg-surface-lowest rounded-lg p-4 h-[220px] overflow-y-auto font-mono text-[10.5px] leading-relaxed space-y-1.5 border border-[#232d3f]/30 scrollbar-thin"
               >
-                {emailProgress.logs.map((log, idx) => (
-                  <div key={idx} className="flex gap-2">
-                    <span className="text-on-surface-variant/30 select-none">&gt;</span>
-                    <span className={
-                      log.startsWith('Success') ? 'text-secondary font-semibold' :
-                      log.startsWith('Failed') ? 'text-error font-semibold' :
-                      log.startsWith('Delivery cancelled') ? 'text-amber-400 font-semibold' :
-                      'text-on-surface'
-                    }>
-                      {log}
-                    </span>
-                  </div>
-                ))}
+                {emailProgress.logs && emailProgress.logs.length > 0 ? (
+                  emailProgress.logs.map((log, idx) => (
+                    <div key={idx} className="flex gap-2">
+                      <span className="text-on-surface-variant/30 select-none">&gt;</span>
+                      <span className={
+                        log.includes('Success') || log.includes('Successfully') ? 'text-secondary font-semibold' :
+                        log.includes('Failed') ? 'text-rose-400 font-semibold' :
+                        log.includes('paused') || log.includes('cancellation') ? 'text-amber-400 font-semibold' :
+                        log.includes('Pacing delay') ? 'text-on-surface-variant/70 italic' :
+                        'text-on-surface'
+                      }>
+                        {log}
+                      </span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-on-surface-variant/40 italic">Waiting for dispatcher events...</p>
+                )}
               </div>
             </div>
 
-            {/* Footer */}
-            {!emailProgress.running && (
-              <div className="px-6 py-4 bg-surface-lowest/40 border-t border-[#232d3f]/60 flex items-center justify-end">
-                <button
-                  onClick={handleCloseEmailProgress}
-                  className="px-4 py-2 bg-primary hover:bg-primary/95 text-on-primary rounded-lg text-xs font-bold transition-colors cursor-pointer"
-                >
-                  Dismiss Console
-                </button>
-              </div>
-            )}
+            {/* Action Footer */}
+            <div className="px-6 py-4 bg-surface-lowest/50 border-t border-[#232d3f]/60 flex items-center justify-between">
+              {emailProgress.running ? (
+                <div className="flex items-center gap-2.5 w-full justify-between">
+                  <div className="flex items-center gap-2">
+                    {emailProgress.paused ? (
+                      <button
+                        onClick={handleResumeEmailQueue}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-all cursor-pointer"
+                      >
+                        <Play className="h-3.5 w-3.5" /> Resume Dispatch
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handlePauseEmailQueue}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 transition-all cursor-pointer"
+                      >
+                        <Pause className="h-3.5 w-3.5" /> Pause Queue
+                      </button>
+                    )}
+                    <button
+                      onClick={handleCancelEmailQueue}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold bg-rose-500/15 text-rose-400 border border-rose-500/30 hover:bg-rose-500/25 transition-all cursor-pointer"
+                    >
+                      <X className="h-3.5 w-3.5" /> Cancel Remaining
+                    </button>
+                  </div>
+                  <span className="text-[10px] text-on-surface-variant font-mono">
+                    Queue active • Do not close window
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2.5 w-full justify-between">
+                  <div>
+                    {emailProgress.failed > 0 && (
+                      <button
+                        onClick={handleRetryFailedEmails}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 transition-all cursor-pointer"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" /> Retry Failed Emails ({emailProgress.failed})
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleCloseEmailProgress}
+                    className="px-5 py-2 bg-primary hover:bg-primary/95 text-on-primary rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    Dismiss Console
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
       {/* Side-Drawer Details Panel Overlay */}
       {drawerOpen && (
@@ -978,7 +1158,7 @@ export default function Results({ batchId, setBatchId }) {
                   </div>
                 </div>
 
-                {/* Invoice specific info */}
+                {/* Client Billing Address & GSTIN/Invoice Number */}
                 <div className="space-y-4 pt-4 border-t border-[#232d3f]/60">
                   <div className="space-y-2">
                     <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Client Billing Address</label>
@@ -991,16 +1171,162 @@ export default function Results({ batchId, setBatchId }) {
                     />
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Client GSTIN (Optional)</label>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Client GSTIN (Optional)</label>
+                      <input
+                        type="text"
+                        name="gstin"
+                        value={formState.gstin}
+                        onChange={handleInputChange}
+                        placeholder="27AAAAA1111A1Z0"
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all font-mono"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Invoice Number</label>
+                      <input
+                        type="text"
+                        name="invoice_number"
+                        value={formState.invoice_number}
+                        onChange={handleInputChange}
+                        placeholder="INV-2026-0000"
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all font-mono"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* PDF File Attachments */}
+                <div className="space-y-4 pt-4 border-t border-[#232d3f]/60">
+                  <h4 className="text-xs font-bold text-on-surface flex items-center gap-1.5">
+                    📄 File Attachments
+                  </h4>
+                  
+                  <div className="space-y-3">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider block">Portfolio PDF Path</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          name="portfolio_pdf_path"
+                          value={formState.portfolio_pdf_path}
+                          onChange={handleInputChange}
+                          placeholder="No portfolio PDF attached"
+                          className="flex-1 bg-surface-lowest border border-outline-variant/40 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleBrowseFile('portfolio')}
+                          className="inline-flex items-center justify-center gap-1.5 px-3 py-2 border border-outline-variant/35 rounded-lg text-xs font-bold bg-surface-container-low hover:bg-surface-container-high text-on-surface transition-colors cursor-pointer"
+                        >
+                          <FolderOpen className="h-3.5 w-3.5" />
+                          Browse
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider block">Invoice PDF Path</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          name="invoice_pdf_path"
+                          value={formState.invoice_pdf_path}
+                          onChange={handleInputChange}
+                          placeholder="No invoice PDF generated yet"
+                          className="flex-1 bg-surface-lowest border border-outline-variant/40 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleBrowseFile('invoice')}
+                          className="inline-flex items-center justify-center gap-1.5 px-3 py-2 border border-outline-variant/35 rounded-lg text-xs font-bold bg-surface-container-low hover:bg-surface-container-high text-on-surface transition-colors cursor-pointer"
+                        >
+                          <FolderOpen className="h-3.5 w-3.5" />
+                          Browse
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Override Calculations & Amounts */}
+                <div className="space-y-4 pt-4 border-t border-[#232d3f]/60">
+                  <div className="flex items-center gap-3">
                     <input
-                      type="text"
-                      name="gstin"
-                      value={formState.gstin}
+                      type="checkbox"
+                      id="override_calculations"
+                      name="override_calculations"
+                      checked={formState.override_calculations}
                       onChange={handleInputChange}
-                      placeholder="27AAAAA1111A1Z0"
-                      className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-4 py-2 text-xs text-on-surface focus:outline-none focus:border-primary transition-all font-mono"
+                      className="rounded border-outline-variant/60 text-primary bg-surface-lowest focus:ring-primary h-4.5 w-4.5 cursor-pointer"
                     />
+                    <label htmlFor="override_calculations" className="text-xs font-bold text-on-surface cursor-pointer select-none">
+                      Override Calculated Amounts Manually
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-on-surface-variant uppercase tracking-wider block">Fee Amount</label>
+                      <input
+                        type="number"
+                        step="any"
+                        name="fee_amount"
+                        value={formState.fee_amount}
+                        disabled={!formState.override_calculations}
+                        onChange={handleInputChange}
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-3 py-1.5 text-xs text-on-surface font-mono disabled:opacity-50"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-on-surface-variant uppercase tracking-wider block">CGST</label>
+                      <input
+                        type="number"
+                        step="any"
+                        name="cgst"
+                        value={formState.cgst}
+                        disabled={!formState.override_calculations}
+                        onChange={handleInputChange}
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-3 py-1.5 text-xs text-on-surface font-mono disabled:opacity-50"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-on-surface-variant uppercase tracking-wider block">SGST</label>
+                      <input
+                        type="number"
+                        step="any"
+                        name="sgst"
+                        value={formState.sgst}
+                        disabled={!formState.override_calculations}
+                        onChange={handleInputChange}
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-3 py-1.5 text-xs text-on-surface font-mono disabled:opacity-50"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-on-surface-variant uppercase tracking-wider block">IGST</label>
+                      <input
+                        type="number"
+                        step="any"
+                        name="igst"
+                        value={formState.igst}
+                        disabled={!formState.override_calculations}
+                        onChange={handleInputChange}
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-3 py-1.5 text-xs text-on-surface font-mono disabled:opacity-50"
+                      />
+                    </div>
+                    <div className="space-y-1.5 md:col-span-2">
+                      <label className="text-[9px] font-bold text-on-surface-variant uppercase tracking-wider block">Total Amount</label>
+                      <input
+                        type="number"
+                        step="any"
+                        name="total_amount"
+                        value={formState.total_amount}
+                        disabled={!formState.override_calculations}
+                        onChange={handleInputChange}
+                        className="w-full bg-surface-lowest border border-outline-variant/40 rounded-lg px-3 py-1.5 text-xs text-on-surface font-mono disabled:opacity-50 font-bold"
+                      />
+                    </div>
                   </div>
                 </div>
               </form>
@@ -1028,6 +1354,30 @@ export default function Results({ batchId, setBatchId }) {
           </div>
         </div>
       )}
-      </div>
+
+      {/* Custom Email Draft Modal */}
+      <EmailDraftModal
+        isOpen={draftOpen}
+        onClose={() => {
+          setDraftOpen(false);
+          setDraftEndpoint('');
+        }}
+        templateEndpoint={draftEndpoint}
+        defaultPayload={draftPayload}
+        onSent={() => {
+          if (batchId) {
+            fetchBatchResults(batchId);
+          }
+        }}
+      />
+
+      {/* In-App PDF Preview Modal */}
+      <PdfViewerModal
+        isOpen={previewPdf.isOpen}
+        onClose={() => setPreviewPdf({ isOpen: false, path: '', title: '' })}
+        pdfPath={previewPdf.path}
+        title={previewPdf.title}
+      />
+    </div>
   );
 }

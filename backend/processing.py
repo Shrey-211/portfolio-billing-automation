@@ -1,5 +1,9 @@
 import os
 import sys
+import re
+import difflib
+import ast
+import operator
 import openpyxl
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image, KeepTogether
@@ -92,18 +96,32 @@ def cleanse_formulas(input_path, output_path):
                 continue
             sheet_data = wb_data[sheet_name]
             
-            # Iterate through all cells in the styled sheet
-            for r in range(1, sheet_styled.max_row + 1):
-                for c in range(1, sheet_styled.max_column + 1):
-                    cell_styled = sheet_styled.cell(row=r, column=c)
-                    val = cell_styled.value
+            # FAST ITERATION: Only loop over instantiated cells in openpyxl memory
+            # This completely avoids iterating over millions of empty cells/columns
+            for (r, c), cell_styled in list(sheet_styled._cells.items()):
+                val = cell_styled.value
+                
+                # If it's a formula (string starting with '=')
+                if isinstance(val, str) and val.startswith("="):
+                    # Copy the evaluated value from the data sheet
+                    eval_val = sheet_data.cell(row=r, column=c).value
+                    cell_styled.value = eval_val
                     
-                    # If it's a formula (string starting with '=')
-                    if isinstance(val, str) and val.startswith("="):
-                        # Copy the evaluated value from the data sheet
-                        eval_val = sheet_data.cell(row=r, column=c).value
-                        cell_styled.value = eval_val
-                        
+            # Trim columns to Column T (20)
+            if sheet_styled.max_column > 20:
+                sheet_styled.delete_cols(21, sheet_styled.max_column - 20)
+                
+            # Trim rows to EXIT marker in Column A
+            exit_row = None
+            for r in range(1, sheet_styled.max_row + 1):
+                cell_val = sheet_styled.cell(row=r, column=1).value
+                if cell_val is not None and str(cell_val).strip().upper() == "EXIT":
+                    exit_row = r
+                    break
+                    
+            if exit_row is not None:
+                sheet_styled.delete_rows(exit_row, sheet_styled.max_row - exit_row + 1)
+                    
         # Ensure output folder exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         wb_styled.save(output_path)
@@ -148,7 +166,7 @@ def calculate_fees(valuation, rules, calculation_type="flat"):
                 if taxable_in_slab > 0:
                     fee += (taxable_in_slab * pct / 100.0) + flat
                     
-    return fee
+    return round(fee, 2)
 
 def calculate_gst(fee_amount, state, gst_rates):
     """
@@ -170,7 +188,10 @@ def calculate_gst(fee_amount, state, gst_rates):
         sgst = 0.0
         igst = fee_amount * (igst_pct / 100.0)
         
-    total_amount = fee_amount + cgst + sgst + igst
+    cgst = round(cgst, 2)
+    sgst = round(sgst, 2)
+    igst = round(igst, 2)
+    total_amount = round(fee_amount + cgst + sgst + igst, 2)
     return {
         "cgst": cgst,
         "sgst": sgst,
@@ -178,6 +199,143 @@ def calculate_gst(fee_amount, state, gst_rates):
         "total_amount": total_amount,
         "is_maharashtra": is_maharashtra
     }
+
+def clean_numeric_str(val):
+    """
+    Safely converts strings with commas, currency symbols, and whitespace to float.
+    """
+    if val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    val_str = str(val).replace("₹", "").replace("$", "").replace(",", "").strip()
+    try:
+        return float(val_str)
+    except (ValueError, TypeError):
+        return 0.0
+
+SAFE_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
+def safe_eval_math(node, variables):
+    """
+    Safely evaluates basic arithmetic expressions without eval().
+    """
+    if isinstance(node, ast.Constant):
+        return float(node.value)
+    elif isinstance(node, ast.Name):
+        lower_id = node.id.lower()
+        for k, v in variables.items():
+            if k.lower() == lower_id:
+                return float(v)
+        raise ValueError(f"Unknown variable in formula: {node.id}")
+    elif isinstance(node, ast.BinOp):
+        op_type = type(node.op)
+        if op_type in SAFE_OPERATORS:
+            left = safe_eval_math(node.left, variables)
+            right = safe_eval_math(node.right, variables)
+            return SAFE_OPERATORS[op_type](left, right)
+        raise ValueError(f"Unsupported operator in formula: {op_type}")
+    elif isinstance(node, ast.UnaryOp):
+        op_type = type(node.op)
+        if op_type in SAFE_OPERATORS:
+            operand = safe_eval_math(node.operand, variables)
+            return SAFE_OPERATORS[op_type](operand)
+        raise ValueError(f"Unsupported unary operator: {op_type}")
+    else:
+        raise ValueError(f"Unsupported formula element: {type(node)}")
+
+def calculate_formula_fee(formula_template="Value * Rate / 4", valuation=0.0, rate=0.0):
+    """
+    Safely calculates the fee using the configurable formula (e.g. 'Value * Rate / 4').
+    Handles both whole percentages (0.25) and fractions (0.0025).
+    """
+    clean_formula = formula_template.replace("=", "").strip() if formula_template else "Value * Rate / 4"
+    if not clean_formula:
+        clean_formula = "Value * Rate / 4"
+        
+    val_num = clean_numeric_str(valuation)
+    rate_num = clean_numeric_str(rate)
+    
+    variables = {
+        "Value": val_num,
+        "Rate": rate_num,
+        "valuation": val_num,
+        "rate": rate_num
+    }
+    try:
+        parsed = ast.parse(clean_formula, mode='eval')
+        result = safe_eval_math(parsed.body, variables)
+        return max(0.0, float(result))
+    except Exception as e:
+        print(f"Formula evaluation error: {e}. Falling back to Value * Rate / 4.")
+        return max(0.0, val_num * rate_num / 4.0)
+
+def find_invoice_sheet_name(sheetnames):
+    """
+    Dynamically finds an invoice sheet name in a list of sheets.
+    """
+    for name in ["invoice", "tax invoice", "tax_invoice", "billing invoice", "bill"]:
+        for s in sheetnames:
+            if s.strip().lower() == name:
+                return s
+    for s in sheetnames:
+        if "invoice" in s.strip().lower():
+            return s
+    return None
+
+def find_individual_portfolio_file(base_folder, client_name):
+    """
+    Implements notes.md requirement:
+    Searches base_folder and immediate subfolders (e.g. 'portfolios', 'clients', 'individual')
+    for a portfolio report file matching the client name (.pdf, .xlsx, .xlsm).
+    """
+    if not base_folder or not os.path.exists(base_folder) or not client_name:
+        return None
+        
+    clean_client = re.sub(r'[^a-zA-Z0-9]', '', str(client_name)).lower()
+    if not clean_client:
+        return None
+        
+    candidate_folders = [base_folder]
+    for sub in ["portfolios", "portfolio", "clients", "individual", "reports", "holdings"]:
+        p = os.path.join(base_folder, sub)
+        if os.path.isdir(p):
+            candidate_folders.append(p)
+            
+    # Also check child directories of base_folder (one level deep)
+    try:
+        for entry in os.scandir(base_folder):
+            if entry.is_dir() and entry.path not in candidate_folders and not entry.name.startswith(('.', '$', 'pdf', 'processed')):
+                candidate_folders.append(entry.path)
+    except Exception:
+        pass
+        
+    best_file = None
+    for folder in candidate_folders:
+        try:
+            for fname in os.listdir(folder):
+                if fname.startswith(('~$', '.')):
+                    continue
+                lower_f = fname.lower()
+                if lower_f.endswith(('.pdf', '.xlsx', '.xlsm')):
+                    base_no_ext = os.path.splitext(fname)[0]
+                    clean_f = re.sub(r'[^a-zA-Z0-9]', '', base_no_ext).lower()
+                    if clean_client in clean_f or clean_f in clean_client:
+                        return os.path.join(folder, fname)
+                    ratio = difflib.SequenceMatcher(None, clean_client, clean_f).ratio()
+                    if ratio > 0.8:
+                        best_file = os.path.join(folder, fname)
+        except Exception:
+            continue
+            
+    return best_file
 
 def convert_excel_to_pdf_fallback(excel_path, pdf_path, sheet_name=None):
     """
@@ -341,29 +499,35 @@ def convert_excel_to_pdf_fallback(excel_path, pdf_path, sheet_name=None):
         print(f"Fallback portfolio PDF generation failed: {e}")
         raise e
 
-def convert_excel_to_pdf(excel_path, pdf_path, sheet_name=None):
+def convert_excel_to_pdf(excel_path, pdf_path, sheet_name=None, excel_app=None):
     """
     Uses win32com to open the excel file and export to PDF.
-    Must be run in main thread or call pythoncom.CoInitialize() first if inside QThread.
+    Supports reusing an existing Excel instance via excel_app for batch performance.
     Falls back to ReportLab layout generation if Excel is unavailable.
     """
     if not EXCEL_AVAILABLE:
         print("win32com not available. Running ReportLab fallback for Portfolio PDF.")
         return convert_excel_to_pdf_fallback(excel_path, pdf_path, sheet_name)
         
-    pythoncom.CoInitialize()
-    excel = None
+    co_initialized = False
+    excel = excel_app
     wb = None
+    should_quit = False
     try:
-        excel = win32com.client.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
+        if not excel:
+            pythoncom.CoInitialize()
+            co_initialized = True
+            excel = win32com.client.DispatchEx("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+            excel.AskToUpdateLinks = False
+            should_quit = True
         
         abs_excel = os.path.abspath(excel_path)
         abs_pdf = os.path.abspath(pdf_path)
         
         os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
-        wb = excel.Workbooks.Open(abs_excel)
+        wb = excel.Workbooks.Open(abs_excel, UpdateLinks=0, ReadOnly=True)
         if sheet_name and sheet_name in [s.Name for s in wb.Sheets]:
             ws = wb.Sheets(sheet_name)
             orig_visibility = ws.Visible
@@ -389,14 +553,18 @@ def convert_excel_to_pdf(excel_path, pdf_path, sheet_name=None):
         if wb:
             try:
                 wb.Close(False)
-            except:
+            except Exception:
                 pass
-        if excel:
+        if excel and should_quit:
             try:
                 excel.Quit()
-            except:
+            except Exception:
                 pass
-        pythoncom.CoUninitialize()
+        if co_initialized:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
 def generate_invoice_pdf(pdf_path, invoice_details, company_details):
     """
@@ -613,25 +781,35 @@ def generate_invoice_pdf(pdf_path, invoice_details, company_details):
         Paragraph(f"<b>{invoice_details.get('total_amount', 0.0):,.2f}</b>", table_cell_right_bold)
     ])
     
+    credit_applied = float(invoice_details.get("credit_applied", 0.0) or 0.0)
+    if credit_applied > 0:
+        row_data.append([
+            Paragraph("Less: Prior Credit Applied (INR)", table_cell_style), "", "", "",
+            Paragraph(f"-{credit_applied:,.2f}", table_cell_right)
+        ])
+        net_payable = max(0.0, float(invoice_details.get("total_amount", 0.0) or 0.0) - credit_applied)
+        row_data.append([
+            Paragraph("<b>Net Amount Payable (INR)</b>", table_cell_style), "", "", "",
+            Paragraph(f"<b>{net_payable:,.2f}</b>", table_cell_right_bold)
+        ])
+    
     particulars_table = Table(row_data, colWidths=[200, 60, 110, 50, 95])
     
-    # Style logic depending on tax rows count
+    # Style logic depending on tax rows count and summary rows count
+    summary_start_idx = len(row_data) - 1 if credit_applied == 0 else len(row_data) - 3
+    
     t_styles = [
         ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1a365d')),
         ('ALIGN', (0,0), (-1,0), 'LEFT'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('GRID', (0,0), (-1,-2), 0.5, colors.HexColor('#cbd5e0')),
-        ('LINEBELOW', (0,-1), (-1,-1), 1.5, colors.HexColor('#1a365d')),
+        ('GRID', (0,0), (-1, summary_start_idx - 1), 0.5, colors.HexColor('#cbd5e0')),
+        ('LINEABOVE', (0, summary_start_idx), (-1, summary_start_idx), 1.0, colors.HexColor('#1a365d')),
+        ('LINEBELOW', (0, -1), (-1, -1), 1.5, colors.HexColor('#1a365d')),
         ('PADDING', (0,0), (-1,-1), 8),
     ]
     
-    if cgst > 0 or sgst > 0:
-        t_styles.append(('SPAN', (0,2), (3,2)))
-        t_styles.append(('SPAN', (0,3), (3,3)))
-        t_styles.append(('SPAN', (0,4), (3,4)))
-    else:
-        t_styles.append(('SPAN', (0,2), (3,2)))
-        t_styles.append(('SPAN', (0,3), (3,3)))
+    for r_idx in range(2, len(row_data)):
+        t_styles.append(('SPAN', (0, r_idx), (3, r_idx)))
         
     particulars_table.setStyle(TableStyle(t_styles))
     
@@ -650,14 +828,29 @@ def generate_invoice_pdf(pdf_path, invoice_details, company_details):
         normal_text
     )
     
+    sign_name = company_details.get('authorized_signatory') or 'Authorized Signatory'
+    sign_title = company_details.get('authorized_signatory_title') or 'Authorized Signatory'
     sign_p = Paragraph(
         f"For <b>{company_details.get('company_name', 'Company Name')}</b><br/><br/><br/><br/>"
-        f"<b>{company_details.get('authorized_signatory', 'Nlesh Bajaj')}</b><br/>"
-        f"{company_details.get('authorized_signatory_title', 'Authorized Signatory')}",
+        f"<b>{sign_name}</b><br/>"
+        f"{sign_title}",
         ParagraphStyle('Sign', parent=normal_text, alignment=2) # Right align
     )
     
-    footer_table = Table([[bank_p, sign_p]], colWidths=[300, 215])
+    sheet_type = invoice_details.get("sheet_type", "example_1")
+    invoice_qr_path = company_details.get("invoice_qr_path", "").strip()
+    
+    if sheet_type == "example_2" and invoice_qr_path and os.path.exists(invoice_qr_path):
+        from reportlab.platypus import Image as RLImage
+        try:
+            qr_img = RLImage(invoice_qr_path, width=80, height=80)
+            footer_table = Table([[bank_p, qr_img, sign_p]], colWidths=[240, 95, 180])
+        except Exception as img_err:
+            print(f"Error loading QR image in ReportLab: {img_err}")
+            footer_table = Table([[bank_p, sign_p]], colWidths=[300, 215])
+    else:
+        footer_table = Table([[bank_p, sign_p]], colWidths=[300, 215])
+        
     footer_table.setStyle(TableStyle([
         ('VALIGN', (0,0), (-1,-1), 'TOP'),
         ('PADDING', (0,0), (-1,-1), 0),
@@ -668,7 +861,12 @@ def generate_invoice_pdf(pdf_path, invoice_details, company_details):
     
     # disputes disclaimer
     story.append(Spacer(1, 15))
-    story.append(Paragraph("<font size='7' color='#718096'>All disputes restricted to Pune Jurisdiction</font>", normal_text))
+    jurisdiction = company_details.get('dispute_jurisdiction', 'Mumbai Jurisdiction')
+    if not jurisdiction.lower().startswith("all disputes"):
+        jurisdiction_text = f"All disputes restricted to {jurisdiction}"
+    else:
+        jurisdiction_text = jurisdiction
+    story.append(Paragraph(f"<font size='7' color='#718096'>{jurisdiction_text}</font>", normal_text))
     
     # Build Document
     doc.build(story)
@@ -701,8 +899,9 @@ def find_master_sheet_name(sheetnames):
 def get_master_sheet_mapping(ws):
     header_row = None
     cols = {}
+    max_col = min(max(ws.max_column or 1, 1), 40)  # scan up to 40 columns
     for r in range(1, 11):
-        row_vals = [ws.cell(row=r, column=c).value for c in range(1, min(25, ws.max_column + 1))]
+        row_vals = [ws.cell(row=r, column=c).value for c in range(1, max_col + 1)]
         normalized_vals = [str(v).strip().lower() if v is not None else "" for v in row_vals]
         if any(h in normalized_vals for h in ["client name", "name of client", "client_name", "name_of_client"]):
             header_row = r
@@ -714,13 +913,33 @@ def get_master_sheet_mapping(ws):
     return header_row, cols
 
 def get_mapped_col(cols_mapping, keys_list, fallback_idx=None):
+    extended_keys = []
     for k in keys_list:
+        extended_keys.append(k)
+        no_under = k.replace("_", "")
+        if no_under not in extended_keys:
+            extended_keys.append(no_under)
+            
+    has_taxable = any("taxable" in k for k in keys_list)
+    has_total = any("total" in k for k in keys_list)
+    has_invoice = any("invoice" in k for k in keys_list)
+    
+    if has_taxable:
+        extended_keys.extend(["taxable", "fee", "taxable_fee", "taxablefee"])
+    if has_total:
+        extended_keys.extend(["total", "total_by_client", "totalbyclient", "total_amount", "totalamount"])
+    if has_invoice:
+        extended_keys.extend(["invoice", "invoiceno", "invoice_no", "invoice_number"])
+
+    for k in extended_keys:
         if k in cols_mapping:
             return cols_mapping[k]
-    for k in keys_list:
+            
+    for k in extended_keys:
         for mk in cols_mapping:
-            if mk.startswith(k) or k in mk:
+            if k in mk or mk in k:
                 return cols_mapping[mk]
+                
     return fallback_idx
 
 def parse_company_and_bank_details(ws_inv):
@@ -835,7 +1054,7 @@ def get_best_sheet_match(client_name, sheet_names):
             
     return best_match
 
-def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path):
+def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path, excel_app=None, sheet_type="example_1", invoice_qr_path=None, invoice_qr_excel_cell="G30"):
     if not EXCEL_AVAILABLE:
         raise RuntimeError("Microsoft Excel is not installed or pywin32 is not configured.")
         
@@ -843,22 +1062,95 @@ def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path):
     import win32com.client
     import os
     
-    pythoncom.CoInitialize()
-    excel = None
+    co_initialized = False
+    excel = excel_app
     wb = None
+    should_quit = False
     try:
-        excel = win32com.client.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
+        if not excel:
+            pythoncom.CoInitialize()
+            co_initialized = True
+            excel = win32com.client.DispatchEx("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+            excel.AskToUpdateLinks = False
+            should_quit = True
         
         abs_excel = os.path.abspath(excel_path)
         abs_pdf = os.path.abspath(pdf_path)
         
         os.makedirs(os.path.dirname(abs_pdf), exist_ok=True)
-        wb = excel.Workbooks.Open(abs_excel)
+        wb = excel.Workbooks.Open(abs_excel, UpdateLinks=0, ReadOnly=False)
         
-        ws = wb.Sheets("Invoice")
-        ws.Range("B13").Value = client_key
+        inv_sheet_name = find_invoice_sheet_name([s.Name for s in wb.Sheets])
+        if not inv_sheet_name:
+            if "Invoice" in [s.Name for s in wb.Sheets]:
+                inv_sheet_name = "Invoice"
+            else:
+                inv_sheet_name = wb.Sheets(1).Name
+                
+        ws = wb.Sheets(inv_sheet_name)
+        
+        try:
+            ws.Range("B13").Value = client_key
+        except Exception:
+            pass
+        
+        if sheet_type == "example_2" and invoice_qr_path and os.path.exists(invoice_qr_path):
+            try:
+                replaced = False
+                for i in range(ws.Shapes.Count, 0, -1):
+                    shape = ws.Shapes.Item(i)
+                    is_target = False
+                    try:
+                        if shape.Name.lower() == "picture 2":
+                            is_target = True
+                    except:
+                        pass
+                    
+                    if not is_target:
+                        try:
+                            addr = shape.TopLeftCell.Address.replace("$", "")
+                            col = ''.join([c for c in addr if c.isalpha()])
+                            row_num = int(''.join([c for c in addr if c.isdigit()]))
+                            if col in ('E', 'F', 'G') and 34 <= row_num <= 37:
+                                is_target = True
+                        except:
+                            pass
+                            
+                    if is_target:
+                        left = shape.Left
+                        top = shape.Top
+                        width = shape.Width
+                        height = shape.Height
+                        shape.Delete()
+                        ws.Shapes.AddPicture(
+                            os.path.abspath(invoice_qr_path),
+                            LinkToFile=False,
+                            SaveWithDocument=True,
+                            Left=left,
+                            Top=top,
+                            Width=width,
+                            Height=height
+                        )
+                        replaced = True
+                        break
+                
+                if not replaced:
+                    cell_name = invoice_qr_excel_cell or "G30"
+                    target_range = ws.Range(cell_name)
+                    ws.Shapes.AddPicture(
+                        os.path.abspath(invoice_qr_path),
+                        LinkToFile=False,
+                        SaveWithDocument=True,
+                        Left=target_range.Left,
+                        Top=target_range.Top,
+                        Width=80,
+                        Height=80
+                    )
+            except Exception as pic_err:
+                print(f"Error adding or replacing QR shape to Excel Invoice: {pic_err}")
+                
         ws.Calculate()
         wb.Save()
         ws.ExportAsFixedFormat(0, abs_pdf)
@@ -871,14 +1163,18 @@ def generate_invoice_pdf_via_excel(excel_path, client_key, pdf_path):
         if wb:
             try:
                 wb.Close(False)
-            except:
+            except Exception:
                 pass
-        if excel:
+        if excel and should_quit:
             try:
                 excel.Quit()
+            except Exception:
+                pass
+        if co_initialized:
+            try:
+                pythoncom.CoUninitialize()
             except:
                 pass
-        pythoncom.CoUninitialize()
 
 def parse_single_excel_sheet(excel_path):
     """
@@ -907,7 +1203,13 @@ def parse_single_excel_sheet(excel_path):
             return None, []
             
         col_name = get_mapped_col(cols, ["client_name", "name_of_client"], 3)
-        col_email = get_mapped_col(cols, ["client_email_id", "email_id", "email"], 9)
+        col_email = get_mapped_col(cols, [
+            "client_email_id", "email_id", "email", "e_mail", "e-mail",
+            "client_email", "emailid", "email_address", "mail"
+        ])
+        col_rm_email = get_mapped_col(cols, [
+            "rm_email", "rm_e-mail", "rm_e_mail", "rm_mail", "relationship_manager_email", "rm_email_id"
+        ])
         col_invoice = get_mapped_col(cols, ["invoice_no", "invoice_number"], 5)
         col_rate = get_mapped_col(cols, ["fee_@", "rate"], 4)
         col_address = get_mapped_col(cols, ["address_1", "address"], 6)
@@ -923,18 +1225,20 @@ def parse_single_excel_sheet(excel_path):
         col_total = get_mapped_col(cols, ["total", "total_inv_amt", "total_amount"], 21)
 
         for r in range(header_row + 1, ws_master.max_row + 1):
+            cell_a_val = ws_master.cell(row=r, column=1).value
+            if cell_a_val is not None and str(cell_a_val).strip().upper() == "EXIT":
+                break
+                
             client_name = ws_master.cell(row=r, column=col_name).value
             if not client_name:
                 continue
             
-            email = str(ws_master.cell(row=r, column=col_email).value or "").strip()
+            email = str(ws_master.cell(row=r, column=col_email).value or "").strip() if col_email else ""
+            rm_email = str(ws_master.cell(row=r, column=col_rm_email).value or "").strip() if col_rm_email else ""
             invoice_no = str(ws_master.cell(row=r, column=col_invoice).value or "").strip()
             
             rate_val = ws_master.cell(row=r, column=col_rate).value
-            try:
-                rate = float(rate_val) if rate_val is not None else 0.0
-            except (ValueError, TypeError):
-                rate = 0.0
+            rate = clean_numeric_str(rate_val)
                 
             address = str(ws_master.cell(row=r, column=col_address).value or "").strip()
             state = str(ws_master.cell(row=r, column=col_state).value or "").strip()
@@ -943,41 +1247,12 @@ def parse_single_excel_sheet(excel_path):
             val_start = ws_master.cell(row=r, column=col_start).value
             val_end = ws_master.cell(row=r, column=col_end).value
             
-            try:
-                valuation_val = ws_master.cell(row=r, column=col_valuation).value
-                valuation = float(valuation_val) if valuation_val is not None else 0.0
-            except (ValueError, TypeError):
-                valuation = 0.0
-                
-            try:
-                taxable_val = ws_master.cell(row=r, column=col_taxable).value
-                taxable_amount = float(taxable_val) if taxable_val is not None else 0.0
-            except (ValueError, TypeError):
-                taxable_amount = 0.0
-                
-            try:
-                cgst_val = ws_master.cell(row=r, column=col_cgst).value
-                cgst = float(cgst_val) if cgst_val is not None else 0.0
-            except (ValueError, TypeError):
-                cgst = 0.0
-                
-            try:
-                sgst_val = ws_master.cell(row=r, column=col_sgst).value
-                sgst = float(sgst_val) if sgst_val is not None else 0.0
-            except (ValueError, TypeError):
-                sgst = 0.0
-                
-            try:
-                igst_val = ws_master.cell(row=r, column=col_igst).value
-                igst = float(igst_val) if igst_val is not None else 0.0
-            except (ValueError, TypeError):
-                igst = 0.0
-                
-            try:
-                total_val = ws_master.cell(row=r, column=col_total).value
-                total_amount = float(total_val) if total_val is not None else 0.0
-            except (ValueError, TypeError):
-                total_amount = 0.0
+            valuation = clean_numeric_str(ws_master.cell(row=r, column=col_valuation).value)
+            taxable_amount = clean_numeric_str(ws_master.cell(row=r, column=col_taxable).value)
+            cgst = clean_numeric_str(ws_master.cell(row=r, column=col_cgst).value)
+            sgst = clean_numeric_str(ws_master.cell(row=r, column=col_sgst).value)
+            igst = clean_numeric_str(ws_master.cell(row=r, column=col_igst).value)
+            total_amount = clean_numeric_str(ws_master.cell(row=r, column=col_total).value)
                 
             if "#value" in state.lower() or not state:
                 if igst > 0:
@@ -992,7 +1267,7 @@ def parse_single_excel_sheet(excel_path):
                 "client_type": "Type 1",
                 "state": state,
                 "email": email,
-                "cc_email": "",
+                "cc_email": rm_email,
                 "address": address,
                 "gstin": "",
                 "valuation": valuation,
@@ -1046,6 +1321,9 @@ def parse_single_excel_sheet(excel_path):
     
     for r_idx in range(header_row_idx + 1, len(rows)):
         row_vals = rows[r_idx]
+        if row_vals and row_vals[0] is not None and str(row_vals[0]).strip().upper() == "EXIT":
+            break
+            
         if not row_vals or not any(v is not None for v in row_vals):
             continue
 
@@ -1120,4 +1398,57 @@ def parse_single_excel_sheet(excel_path):
 
     wb.close()
     return None, clients
+
+def find_portfolio_file_in_folder(folder_path, client_name):
+    portfolio_dir = os.path.join(folder_path, "portfolio")
+    if not os.path.isdir(portfolio_dir):
+        return None
+        
+    import re
+    import difflib
+    
+    # Normalize client name
+    c_clean = re.sub(r'[^a-zA-Z0-9\s]', '', client_name).lower().strip()
+    c_words = [w for w in c_clean.split() if w not in ('huf', 'and', 'trust', 'pvt', 'ltd', 'private', 'limited', 'equity', 'mf', 'portfolio', 'pf')]
+    if not c_words:
+        return None
+        
+    files = [f for f in os.listdir(portfolio_dir) if (f.endswith(".xlsx") or f.endswith(".xlsm")) and not f.startswith("~$")]
+    
+    best_match = None
+    max_score = 0
+    
+    for f in files:
+        f_lower = f.lower().strip()
+        f_clean = re.sub(r'[^a-zA-Z0-9\s]', '', os.path.splitext(f_lower)[0])
+        f_words = [w for w in f_clean.split() if w not in ('huf', 'and', 'trust', 'pvt', 'ltd', 'private', 'limited', 'equity', 'mf', 'portfolio', 'pf')]
+        if not f_words:
+            continue
+            
+        matches = 0
+        for cw in c_words:
+            m = difflib.get_close_matches(cw, f_words, n=1, cutoff=0.75)
+            if m:
+                matches += 1
+                
+        score = matches
+        first_word_matches = difflib.get_close_matches(c_words[0], f_words, n=1, cutoff=0.75)
+        if first_word_matches:
+            score += 1
+            
+        c_joined = "".join(c_words)
+        s_joined = "".join(f_words)
+        if c_joined == s_joined:
+            score += 5
+        elif c_joined in s_joined or s_joined in c_joined:
+            score += 2
+            
+        if score > max_score and score >= 2:
+            max_score = score
+            best_match = f
+            
+    if best_match:
+        return os.path.join(portfolio_dir, best_match)
+    return None
+
 
