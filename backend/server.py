@@ -8,6 +8,8 @@ from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from urllib.parse import quote
 from pydantic import BaseModel
 import tkinter as tk
 from tkinter import filedialog
@@ -1022,25 +1024,89 @@ def get_recent_batches():
 def get_batch_results(batch_id: int):
     return database.get_batch_items(batch_id)
 
+@app.get("/api/pdf/view")
+def view_pdf_document(path: str):
+    """Stream PDF for inline in-app preview or browser tab."""
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="PDF file not found on disk.")
+    if not path.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Requested file is not a PDF document.")
+    filename = os.path.basename(path)
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+    )
+
+@app.get("/api/pdf/download")
+def download_pdf_document(path: str):
+    """Download PDF directly to client machine."""
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="PDF file not found on disk.")
+    if not path.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Requested file is not a PDF document.")
+    filename = os.path.basename(path)
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+@app.get("/api/invoices/{item_id}/pdf")
+def get_invoice_pdf_by_id(item_id: int, doc_type: str = "invoice"):
+    """Fetch invoice or portfolio PDF directly by job item ID."""
+    conn = database.get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT invoice_pdf_path, portfolio_pdf_path, client_name FROM job_items WHERE id = ?", (item_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Invoice record not found.")
+        
+    file_path = row["invoice_pdf_path"] if doc_type == "invoice" else row["portfolio_pdf_path"]
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"{doc_type.capitalize()} PDF file not found on disk.")
+        
+    filename = os.path.basename(file_path)
+    return FileResponse(
+        file_path,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+    )
+
 @app.post("/api/pdf/open")
 def open_pdf_document(payload: Dict[str, str]):
     path = payload.get("path")
     if not path or not os.path.exists(path):
         raise HTTPException(status_code=404, detail="File not found")
+        
+    view_url = f"/api/pdf/view?path={quote(path)}"
+    opened_system = False
     try:
         open_system_path(path)
-        return {"status": "opened"}
+        opened_system = True
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"System launcher note (may be running headless or web mode): {e}")
+        
+    return {
+        "status": "opened" if opened_system else "ready",
+        "view_url": view_url,
+        "filename": os.path.basename(path)
+    }
 
 @app.post("/api/folders/open")
 def open_folder_directory(payload: Dict[str, str]):
     path = payload.get("path")
     if not path or not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Directory not found")
+        
+    # If a 'pdf' subfolder exists, open that directly so the user sees their generated files
+    pdf_sub = os.path.join(path, "pdf")
+    target_path = pdf_sub if os.path.isdir(pdf_sub) else path
+    
     try:
-        open_system_path(path)
-        return {"status": "opened"}
+        open_system_path(target_path)
+        return {"status": "opened", "path": target_path}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

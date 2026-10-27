@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import API_BASE from '../api';
 import EmailDraftModal from './EmailDraftModal';
+import PdfViewerModal from './PdfViewerModal';
 import { 
 
   CheckCircle, 
@@ -36,6 +37,7 @@ export default function Results({ batchId, setBatchId }) {
   const [items, setItems] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [previewPdf, setPreviewPdf] = useState({ isOpen: false, path: '', title: '' });
 
   // Email draft modal state
   const [draftOpen, setDraftOpen] = useState(false);
@@ -343,19 +345,16 @@ export default function Results({ batchId, setBatchId }) {
     }
   };
 
-  const handleOpenPdf = async (path) => {
-    try {
-      const res = await fetch(`${API_BASE}/api/pdf/open`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path })
-      });
-      if (!res.ok) {
-        alert("Failed to launch PDF viewer on server: " + await res.text());
-      }
-    } catch (err) {
-      console.error("Failed to open PDF file", err);
+  const handleOpenPdf = (path, title = "Document Preview") => {
+    if (!path) {
+      alert("PDF file path is missing or not yet generated.");
+      return;
     }
+    setPreviewPdf({
+      isOpen: true,
+      path,
+      title: title || "Document Preview"
+    });
   };
 
   const handleOpenFolder = async () => {
@@ -691,7 +690,7 @@ export default function Results({ batchId, setBatchId }) {
                           <div className="flex gap-2.5">
                             {item.portfolio_pdf_path ? (
                               <button
-                                onClick={() => handleOpenPdf(item.portfolio_pdf_path)}
+                                onClick={() => handleOpenPdf(item.portfolio_pdf_path, `Portfolio Report: ${item.client_name}`)}
                                 className="text-primary hover:text-primary-container font-semibold flex items-center gap-0.5 cursor-pointer"
                                 title="Open Portfolio"
                               >
@@ -704,7 +703,7 @@ export default function Results({ batchId, setBatchId }) {
                             ) : null}
                             {item.invoice_pdf_path ? (
                               <button
-                                onClick={() => handleOpenPdf(item.invoice_pdf_path)}
+                                onClick={() => handleOpenPdf(item.invoice_pdf_path, `Tax Invoice: ${item.client_name}`)}
                                 className="text-primary hover:text-primary-container font-semibold flex items-center gap-0.5 cursor-pointer"
                                 title="Open Invoice"
                               >
@@ -1238,6 +1237,14 @@ export default function Results({ batchId, setBatchId }) {
           }
         }}
       />
-      </div>
+
+      {/* In-App PDF Preview Modal */}
+      <PdfViewerModal
+        isOpen={previewPdf.isOpen}
+        onClose={() => setPreviewPdf({ isOpen: false, path: '', title: '' })}
+        pdfPath={previewPdf.path}
+        title={previewPdf.title}
+      />
+    </div>
   );
 }

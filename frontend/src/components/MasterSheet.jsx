@@ -21,6 +21,7 @@ import {
 import InvoiceEditModal from './InvoiceEditModal';
 import EmailDraftModal from './EmailDraftModal';
 import PaymentRecordModal from './PaymentRecordModal';
+import PdfViewerModal from './PdfViewerModal';
 
 
 export default function MasterSheet({ folderPath }) {
@@ -32,6 +33,7 @@ export default function MasterSheet({ folderPath }) {
   const [paymentInvoice, setPaymentInvoice] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState({ text: '', type: '' });
+  const [previewPdf, setPreviewPdf] = useState({ isOpen: false, path: '', title: '' });
 
   // Inline edit state
   const [editingCell, setEditingCell] = useState(null); // { itemId, field }
@@ -175,22 +177,16 @@ export default function MasterSheet({ folderPath }) {
     }
   };
 
-  const handleOpenPDF = async (pdfPath) => {
-    if (!pdfPath) return;
-    try {
-      const res = await fetch(`${API_BASE}/api/pdf/open`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: pdfPath })
-      });
-      if (!res.ok) {
-        const errTxt = await res.text();
-        showFeedback("Failed to open PDF: " + errTxt, "error");
-      }
-    } catch (err) {
-      console.error("Error opening PDF:", err);
-      showFeedback("Error opening PDF: " + err.message, "error");
+  const handleOpenPDF = (pdfPath, title = "Document Preview") => {
+    if (!pdfPath) {
+      showFeedback("PDF document path is missing or not yet generated.", "warning");
+      return;
     }
+    setPreviewPdf({
+      isOpen: true,
+      path: pdfPath,
+      title: title || "Document Preview"
+    });
   };
 
   const showFeedback = (text, type = 'success') => {
@@ -575,7 +571,7 @@ export default function MasterSheet({ folderPath }) {
                         {inv.status === 'Completed' && inv.invoice_pdf_path ? (
                           <div className="flex flex-col sm:flex-row items-center justify-center gap-2">
                             <button
-                              onClick={() => handleOpenPDF(inv.invoice_pdf_path)}
+                              onClick={() => handleOpenPDF(inv.invoice_pdf_path, `Tax Invoice: ${inv.client_name}`)}
                               className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-bold bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 hover:border-primary/35 transition-all cursor-pointer"
                               title="View Invoice PDF"
                             >
@@ -584,7 +580,7 @@ export default function MasterSheet({ folderPath }) {
                             </button>
                             {inv.portfolio_pdf_path && (
                               <button
-                                onClick={() => handleOpenPDF(inv.portfolio_pdf_path)}
+                                onClick={() => handleOpenPDF(inv.portfolio_pdf_path, `Portfolio Report: ${inv.client_name}`)}
                                 className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-bold bg-secondary/10 text-secondary border border-secondary/20 hover:bg-secondary/20 hover:border-secondary/35 transition-all cursor-pointer"
                                 title="View Portfolio PDF"
                               >
@@ -730,6 +726,13 @@ export default function MasterSheet({ folderPath }) {
         }}
         invoice={paymentInvoice}
         onSaved={handlePaymentRecorded}
+      />
+
+      <PdfViewerModal
+        isOpen={previewPdf.isOpen}
+        onClose={() => setPreviewPdf({ isOpen: false, path: '', title: '' })}
+        pdfPath={previewPdf.path}
+        title={previewPdf.title}
       />
     </div>
   );

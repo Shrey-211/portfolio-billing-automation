@@ -18,6 +18,7 @@ import {
   Eye
 } from 'lucide-react';
 import EmailDraftModal from './EmailDraftModal';
+import PdfViewerModal from './PdfViewerModal';
 
 export default function ClientDatabase() {
   const [clients, setClients] = useState([]);
@@ -27,6 +28,7 @@ export default function ClientDatabase() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [clientHistory, setClientHistory] = useState({ profile: null, billing: [], emails: [] });
   const [activeSubTab, setActiveSubTab] = useState('billing'); // 'billing' or 'emails'
+  const [previewPdf, setPreviewPdf] = useState({ isOpen: false, path: '', title: '' });
   
   // Profile edit fields
   const [clientType, setClientType] = useState('Type 1');
@@ -128,17 +130,13 @@ export default function ClientDatabase() {
     }
   };
 
-  const handleOpenPDF = async (pdfPath) => {
+  const handleOpenPDF = (pdfPath, title = "Document Preview") => {
     if (!pdfPath) return;
-    try {
-      await fetch(`${API_BASE}/api/pdf/open`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: pdfPath })
-      });
-    } catch (err) {
-      console.error(err);
-    }
+    setPreviewPdf({
+      isOpen: true,
+      path: pdfPath,
+      title: title || "Document Preview"
+    });
   };
 
   const handleComposeCustomEmail = () => {
@@ -394,18 +392,18 @@ export default function ClientDatabase() {
                                   <div className="flex items-center justify-end gap-1.5">
                                     {inv.invoice_pdf_path && (
                                       <button
-                                        onClick={() => handleOpenPDF(inv.invoice_pdf_path)}
-                                        className="p-1 hover:bg-surface-container-high text-primary hover:text-primary rounded"
-                                        title="Invoice PDF"
+                                        onClick={() => handleOpenPDF(inv.invoice_pdf_path, `Tax Invoice: ${inv.client_name}`)}
+                                        className="p-1 hover:bg-surface-container-high text-primary hover:text-primary rounded cursor-pointer"
+                                        title="View Invoice PDF"
                                       >
                                         <FileText className="h-3.5 w-3.5" />
                                       </button>
                                     )}
                                     {inv.portfolio_pdf_path && (
                                       <button
-                                        onClick={() => handleOpenPDF(inv.portfolio_pdf_path)}
-                                        className="p-1 hover:bg-surface-container-high text-secondary hover:text-secondary rounded"
-                                        title="Portfolio PDF"
+                                        onClick={() => handleOpenPDF(inv.portfolio_pdf_path, `Portfolio Report: ${inv.client_name}`)}
+                                        className="p-1 hover:bg-surface-container-high text-secondary hover:text-secondary rounded cursor-pointer"
+                                        title="View Portfolio PDF"
                                       >
                                         <Eye className="h-3.5 w-3.5" />
                                       </button>
@@ -530,6 +528,14 @@ export default function ClientDatabase() {
         </div>,
         document.body
       )}
+
+      {/* In-App PDF Preview Modal */}
+      <PdfViewerModal
+        isOpen={previewPdf.isOpen}
+        onClose={() => setPreviewPdf({ isOpen: false, path: '', title: '' })}
+        pdfPath={previewPdf.path}
+        title={previewPdf.title}
+      />
     </div>
   );
 }
